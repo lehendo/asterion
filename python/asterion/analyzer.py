@@ -74,3 +74,15 @@ def analyze(source):
     }
 
 
+def _index(trace, variant):
+    validate_trace(trace)
+    variants = sorted({r["variant"] for r in trace["records"]})
+    if variant is None:
+        if len(variants) != 1:
+            raise ValidationError(f"choose a variant explicitly from {variants}")
+        variant = variants[0]
+    if variant not in variants:
+        raise ValidationError(f"unknown variant {variant!r}")
+    return {r["case_id"]: r for r in trace["records"] if r["variant"] == variant}
+
+
