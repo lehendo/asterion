@@ -208,3 +208,50 @@ class BoundKernel:
         return self.output
 
 
+def reference(program, *inputs):
+    import torch
+
+    values = {}
+    operands = iter(inputs)
+    for n in program.nodes:
+        if n.op == "input":
+            v = next(operands)
+        elif n.op == "const":
+            v = float(n.value)
+        elif n.op in {"sum", "max"}:
+            v = values[n.args[0]].sum(dim=1) if n.op == "sum" else values[n.args[0]].amax(dim=1)
+        elif n.op == "matmul":
+            v = values[n.args[0]] @ values[n.args[1]]
+        else:
+            args = [values[a] for a in n.args]
+            if program.operation not in {"pointwise", "gemm"}:
+                args = [
+                    x[:, None]
+                    if hasattr(x, "ndim")
+                    and x.ndim == 1
+                    and any(hasattr(a, "ndim") and a.ndim == 2 for a in args)
+                    else x
+                    for x in args
+                ]
+            if n.op == "add":
+                v = args[0] + args[1]
+            elif n.op == "mul":
+                v = args[0] * args[1]
+            elif n.op == "sub":
+                v = args[0] - args[1]
+            elif n.op == "div":
+                v = args[0] / args[1]
+            elif n.op == "relu":
+                v = torch.relu(
+                    torch.as_tensor(args[0], device=inputs[0].device, dtype=inputs[0].dtype)
+                )
+            elif n.op == "exp":
+                v = torch.exp(
+                    torch.as_tensor(args[0], device=inputs[0].device, dtype=inputs[0].dtype)
+                )
+            else:
+                raise ValidationError("unsupported reference node")
+        values[n.name] = v
+    return values[program.output]
+
+
