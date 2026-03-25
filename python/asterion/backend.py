@@ -154,3 +154,57 @@ class Kernel:
         return bound.output
 
 
+class BoundKernel:
+    def __init__(self, kernel, inputs, output, stages):
+        self.kernel, self.inputs, self.output, self.stages = kernel, inputs, output, stages
+        self.compiled_kernels = {}
+        self.input_shapes = tuple(tuple(x.shape) for x in inputs)
+        self.output_shape = tuple(output.shape)
+        self.storage_pointers = tuple(x.data_ptr() for x in (*inputs, output))
+
+    def launch(self):
+        k = self.kernel
+        p, s = k.program, k.schedule
+        for tensor, shape in zip(
+            (*self.inputs, self.output), (*self.input_shapes, self.output_shape)
+        ):
+            if (
+                tuple(tensor.shape) != shape
+                or tensor.dtype != k.torch.float32
+                or not tensor.is_contiguous()
+            ):
+                raise ValidationError("prepared tensor metadata changed")
+            if tensor.device.index != k.torch.cuda.current_device():
+                raise ValidationError("prepared tensors must remain on the current CUDA device")
+        if any(x.requires_grad for x in (*self.inputs, self.output)):
+            raise ValidationError("prepared inference tensors now require autograd")
+        if tuple(x.data_ptr() for x in (*self.inputs, self.output)) != self.storage_pointers:
+            raise ValidationError("prepared tensor storage changed")
+        options = {"num_warps": s.warps, "enable_fp_fusion": False}
+        if p.operation == "gemm":
+            grid = (k.triton.cdiv(p.shape[0], s.tile_m), k.triton.cdiv(p.shape[1], s.tile_n))
+            self.last_compiled = k.module.kernel[grid](
+                *self.inputs, self.output, *p.shape, **options
+            )
+        elif p.operation == "pointwise" and not s.fusion and self.stages:
+            grid = (k.triton.cdiv(p.shape[0], s.block),)
+            for fn, args, out in self.stages:
+                self.last_compiled = fn[grid](*args, out, p.shape[0], **options)
+                self.compiled_kernels[getattr(self.last_compiled, "name", str(fn))] = (
+                    self.last_compiled
+                )
+        else:
+            grid = (k.triton.cdiv(p.shape[0], s.block if p.operation == "pointwise" else s.rows),)
+            self.last_compiled = k.module.kernel[grid](
+                *self.inputs, self.output, *p.shape, **options
+            )
+        self.compiled_kernels[getattr(self.last_compiled, "name", "kernel")] = self.last_compiled
+        # Record current stream again when a prepared launcher is reused on another stream.
+        stream = k.torch.cuda.current_stream()
+        for x in (*self.inputs, self.output):
+            x.record_stream(stream)
+        for _, _, out in self.stages:
+            out.record_stream(stream)
+        return self.output
+
+
