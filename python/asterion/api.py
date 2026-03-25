@@ -59,3 +59,17 @@ def reduce_regression(
     return run(spec, output, max_trials=max_trials, budget_seconds=budget_seconds)
 
 
+def export_reproducer(spec, *, output: str | Path):
+    """CPU-only native IR regeneration or passive reviewed-source bundle export."""
+    from .io import ValidationError, read
+
+    value = read(spec) if isinstance(spec, (str, Path)) else spec
+    if not isinstance(value, dict):
+        raise ValidationError("workload input must be a specification or saved diagnosis object")
+    if value.get("artifact_type") in {"triton_case", "external_diagnosis"}:
+        from .external_workflow import export_external
+
+        return export_external(spec, output)
+    from .reproducer import export_reproducer as run
+
+    return run(value, output)
