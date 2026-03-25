@@ -19,3 +19,43 @@ def optimize(
     return run(spec, output, tuning_budget_s, max_variants, objective)
 
 
+def diagnose(spec, *, output: str | Path, trusted_code=False):
+    """Diagnose native IR or explicitly trusted external Triton source."""
+    from .io import ValidationError, read
+
+    value = read(spec) if isinstance(spec, (str, Path)) else spec
+    if not isinstance(value, dict):
+        raise ValidationError("workload input must be a specification or saved diagnosis object")
+    if value.get("artifact_type") in {"triton_case", "external_diagnosis"}:
+        from .external_workflow import diagnose_external
+
+        return diagnose_external(spec, output, trusted_code=trusted_code)
+    from .diagnostic_gpu import diagnose as run
+
+    return run(spec, output)
+
+
+def reduce_regression(
+    spec, *, output: str | Path, max_trials=6, budget_seconds=120, trusted_code=False
+):
+    """Try bounded shape reductions and require fresh confirmation before export."""
+    from .io import ValidationError, read
+
+    value = read(spec) if isinstance(spec, (str, Path)) else spec
+    if not isinstance(value, dict):
+        raise ValidationError("workload input must be a specification or saved diagnosis object")
+    if value.get("artifact_type") in {"triton_case", "external_diagnosis"}:
+        from .external_reduction import reduce_external
+
+        return reduce_external(
+            spec,
+            output,
+            max_trials=max_trials,
+            budget_seconds=budget_seconds,
+            trusted_code=trusted_code,
+        )
+    from .reduction import reduce_regression as run
+
+    return run(spec, output, max_trials=max_trials, budget_seconds=budget_seconds)
+
+
