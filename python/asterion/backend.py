@@ -255,3 +255,35 @@ def reference(program, *inputs):
     return values[program.output]
 
 
+def make_inputs(program, seed):
+    torch, _ = require_gpu()
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    shapes = (
+        [(program.shape[0], program.shape[2]), (program.shape[2], program.shape[1])]
+        if program.operation == "gemm"
+        else [program.shape]
+    )
+    return tuple(
+        torch.randn(shape, device="cuda", dtype=torch.float32, generator=generator)
+        for shape in shapes
+    )
+
+
+def binary_metadata(bound):
+    from hashlib import sha256
+
+    total = 0
+    hashes = []
+    for compiled in bound.compiled_kernels.values():
+        cubin = getattr(compiled, "asm", {}).get("cubin")
+        if not isinstance(cubin, bytes) or not cubin:
+            raise ValidationError("compiled CUBIN unavailable; cannot enforce machine-code budget")
+        total += len(cubin)
+        hashes.append(sha256(cubin).hexdigest())
+    if not hashes:
+        raise ValidationError("kernel must be launched before inspecting compiled code")
+    return {
+        "compiled_binary_hashes": sorted(hashes),
+        "generated_code_bytes": total,
+        "code_budget_unit": "cubin_bytes",
+    }
