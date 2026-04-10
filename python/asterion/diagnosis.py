@@ -125,3 +125,79 @@ def schedule_analysis(program, schedule):
     }
 
 
+def interventions(spec):
+    """Undo each effective changed field independently; retain full revert control."""
+    spec = specification(spec)
+    p = Program.from_dict(spec["program"])
+    a, b = (Schedule.from_dict(spec[k]) for k in ("baseline", "candidate"))
+    source = generate(p, b)
+    results = []
+    for field in FIELDS:
+        if getattr(a, field) == getattr(b, field):
+            continue
+        try:
+            s, trail = transform(p, b, **{field: getattr(a, field)})
+            effective = generate(p, s) != source or s.warps != b.warps
+            results.append(
+                {
+                    "id": "undo_" + field,
+                    "field": field,
+                    "schedule": s.to_dict(),
+                    "trail": trail,
+                    "status": "executable" if effective else "inert",
+                }
+            )
+        except ValidationError as exc:
+            results.append(
+                {"id": "undo_" + field, "field": field, "status": "illegal", "reason": str(exc)}
+            )
+    return results
+
+
+def paired_effect(baseline, candidate, *, threshold=0.10, comparisons=1):
+    """Exact one-sided sign tests on randomized blocks, with multiplicity guard.
+
+    Tests exceedance of a practical effect, not equality of means. Ties count
+    against a claim. Independence/stationarity remain experimental assumptions.
+    """
+    if (
+        not isinstance(baseline, list)
+        or not isinstance(candidate, list)
+        or len(baseline) != len(candidate)
+        or not 12 <= len(baseline) <= 100
+    ):
+        raise ValidationError("paired comparison needs 12..100 aligned blocks")
+    positive(threshold, "threshold")
+    integer(comparisons, "comparisons")
+    ratios = [
+        positive(b, "candidate timing") / positive(a, "baseline timing")
+        for a, b in zip(baseline, candidate)
+    ]
+    n = len(ratios)
+
+    def tail(wins):
+        return sum(math.comb(n, i) for i in range(wins, n + 1)) / 2**n
+
+    worse = tail(sum(r > 1 + threshold for r in ratios))
+    better = tail(sum(r < 1 / (1 + threshold) for r in ratios))
+    alpha = 0.01 / (2 * comparisons)
+    verdict = (
+        "regression" if worse <= alpha else "improvement" if better <= alpha else "inconclusive"
+    )
+    return {
+        "category": "MEASURED",
+        "verdict": verdict,
+        "median_paired_ratio": statistics.median(ratios),
+        "paired_ratios": ratios,
+        "baseline_median_us": statistics.median(baseline),
+        "candidate_median_us": statistics.median(candidate),
+        "regression_p": worse,
+        "improvement_p": better,
+        "per_tail_alpha": alpha,
+        "practical_threshold": threshold,
+        "blocks": n,
+        "method": "one-sided exact sign tests, two directions and declared comparison count Bonferroni guarded",
+        "limitations": "Assumes independent stationary blocks; inconclusive does not mean equivalent. Controls declared comparisons, not adaptive experiment selection.",
+    }
+
+
