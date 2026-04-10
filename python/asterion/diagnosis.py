@@ -201,3 +201,13 @@ def paired_effect(baseline, candidate, *, threshold=0.10, comparisons=1):
     }
 
 
+def selected_plans(spec):
+    spec = specification(spec)
+    if spec["intervention_policy"] == "none":
+        return []
+    statuses = (
+        {"executable", "inert"} if spec["intervention_policy"] == "all_changed" else {"executable"}
+    )
+    return [p for p in interventions(spec) if p["status"] in statuses]
+
+
