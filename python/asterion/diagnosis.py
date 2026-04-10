@@ -74,3 +74,54 @@ def specification(value):
         raise ValidationError(f"malformed regression specification: {exc}") from exc
 
 
+def schedule_analysis(program, schedule):
+    """Executable lowering structure; traffic is an ideal model, not counters."""
+    p = canonicalize(program)
+    verify_schedule(p, schedule)
+    s = schedule
+    if p.operation == "pointwise":
+        ranks = verify(p)
+        stages = [n for n in p.nodes if n.op != "input" and ranks[n.name] == "tensor"]
+        launches = 1 if s.fusion else max(1, len(stages))
+        padded = math.ceil(p.shape[0] / s.block) * s.block
+        # Fused: input read and output write. Unfused: count tensor dependencies.
+        tensor = {n.name for n in p.nodes if ranks[n.name] == "tensor"}
+        transfers = (
+            2
+            if s.fusion or not stages
+            else sum(1 + len({a for a in n.args if a in tensor}) for n in stages)
+        )
+        traffic = 4 * p.shape[0] * transfers
+        useful = p.shape[0]
+    elif p.operation == "gemm":
+        m, n, k = p.shape
+        launches = 1
+        padded = (
+            math.ceil(m / s.tile_m)
+            * s.tile_m
+            * math.ceil(n / s.tile_n)
+            * s.tile_n
+            * math.ceil(k / (s.tile_k * s.unroll))
+            * s.tile_k
+            * s.unroll
+        )
+        useful = m * n * k
+        traffic = 4 * (m * k + k * n + m * n)
+    else:
+        rows, width = p.shape
+        tile = s.row_tile or 1 << (width - 1).bit_length()
+        launches = 1
+        padded = math.ceil(rows / s.rows) * s.rows * tile
+        useful = rows * width
+        traffic = 4 * (rows * width + (rows * width if p.operation == "softmax" else rows))
+    return {
+        "category": "MODEL_ESTIMATE",
+        "launch_count": launches,
+        "padded_work_units": padded,
+        "useful_work_units": useful,
+        "padding_ratio": padded / useful,
+        "ideal_global_bytes": traffic,
+        "limitations": "Lowering-derived counts; ignores caches, spills, compiler elimination and hardware occupancy. GEMM traffic is a compulsory lower bound.",
+    }
+
+
