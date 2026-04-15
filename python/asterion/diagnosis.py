@@ -211,3 +211,141 @@ def selected_plans(spec):
     return [p for p in interventions(spec) if p["status"] in statuses]
 
 
+def assemble(spec, environment, variants, blocks, *, boundary="device_graph_us"):
+    spec = specification(spec)
+    plans = interventions(spec)
+    usable = selected_plans(spec)
+    names = ["baseline", "candidate"] + [x["id"] for x in usable]
+    if any(name not in variants for name in names):
+        raise ValidationError("missing experiment variant")
+    p = Program.from_dict(spec["program"])
+    expected_schedules = {"baseline": spec["baseline"], "candidate": spec["candidate"]}
+    expected_schedules.update({x["id"]: x["schedule"] for x in usable})
+    try:
+        for name in names:
+            variant = variants[name]
+            certificate = dict(variant["certificate"])
+            identity = certificate.pop("certificate_id")
+            if (
+                variant["status"] != "passed"
+                or certificate["status"] != "passed"
+                or identity != digest(certificate)
+                or certificate["program_hash"] != p.hash
+                or variant["program_hash"] != p.hash
+                or certificate["schedule"] != expected_schedules[name]
+                or variant["schedule"] != expected_schedules[name]
+                or certificate["target"] != environment["gpu_runtime"]
+                or certificate["kernel_key"] != variant["kernel_key"]
+                or certificate["compiled_binary_hashes"] != variant["compiled_binary_hashes"]
+            ):
+                raise ValidationError("variant numerical evidence/identity mismatch")
+            expected_checks = {
+                (pattern, seed)
+                for pattern in ("normal", "zeros", "alternating", "wide_finite")
+                for seed in (spec["seed"], spec["seed"] + 1)
+            }
+            observed_checks = {
+                (check["pattern"], check["seed"])
+                for check in certificate["checks"]
+                if check["passed"] is True
+            }
+            if observed_checks != expected_checks or len(certificate["checks"]) != len(
+                expected_checks
+            ):
+                raise ValidationError("variant numerical suite is incomplete")
+        if len(blocks) != spec["rounds"]:
+            raise ValidationError("incomplete randomized block count")
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValidationError(f"missing numerical evidence: {exc}") from exc
+    for block in blocks:
+        if set(block["order"]) != set(names) or len(block["order"]) != len(names):
+            raise ValidationError("each randomized block must contain every variant once")
+
+    def samples(name):
+        return [b["measurements"][name][boundary] for b in blocks]
+
+    main = paired_effect(
+        samples("baseline"),
+        samples("candidate"),
+        threshold=spec["threshold"],
+        comparisons=1 + len(usable),
+    )
+    findings = []
+    candidate_model = schedule_analysis(p, Schedule.from_dict(spec["candidate"]))
+    for plan in usable:
+        effect = paired_effect(
+            samples("candidate"),
+            samples(plan["id"]),
+            threshold=spec["threshold"],
+            comparisons=1 + len(usable),
+        )
+        supported = main["verdict"] == "regression" and effect["verdict"] == "improvement"
+        after_model = schedule_analysis(p, Schedule.from_dict(plan["schedule"]))
+        changes = {
+            key: {"before": candidate_model[key], "after": after_model[key]}
+            for key in ("launch_count", "padding_ratio", "ideal_global_bytes")
+            if candidate_model[key] != after_model[key]
+        }
+        mechanism = "The schedule can change downstream register allocation, instruction selection or mapping; the physical mechanism is unresolved."
+        if after_model["launch_count"] < candidate_model["launch_count"]:
+            mechanism = "Fewer generated launches and modeled intermediate global-memory transfers may contribute; their separate contributions have not been isolated."
+        elif after_model["padding_ratio"] < candidate_model["padding_ratio"]:
+            mechanism = "Reduced padded work may contribute; tile-dependent register use and downstream compilation remain alternative explanations."
+        findings.append(
+            {
+                "field": plan["field"],
+                "intervention": plan,
+                "result": effect,
+                "category": "CONTROLLED_ABLATION" if supported else "HYPOTHESIS",
+                "supported": supported,
+                "hypothesis": f"The change to {plan['field']} contributes to the observed regression under this fixed workload.",
+                "evidence_quality": "repeated controlled schedule effect"
+                if supported
+                else "unresolved",
+                "mechanism_hypothesis": {"category": "HYPOTHESIS", "statement": mechanism},
+                "lowering_model_changes": {"category": "MODEL_ESTIMATE", "changes": changes},
+                "supporting_evidence": [
+                    "Correctness-gated one-field reversion",
+                    "Randomized paired block timings",
+                ]
+                if supported
+                else [],
+                "contradicting_evidence": []
+                if supported
+                else [
+                    "No joint evidence of baseline regression and helpful reversion at the declared threshold"
+                ],
+                "explanation": f"Reverting {plan['field']} {'improved' if supported else 'did not establish improvement in'} this fixed workload and execution boundary.",
+                "alternative_explanations": [
+                    "Compiler changes induced by the schedule parameter",
+                    "Device interference or time-varying clocks",
+                    "Interactions with other schedule parameters",
+                    "Distinct output/intermediate buffer addresses and cache state",
+                ],
+                "hardware_cause": "UNAVAILABLE: no privileged counters; no occupancy or bandwidth causal claim",
+            }
+        )
+    return {
+        "schema_version": 1,
+        "artifact_type": "diagnosis",
+        "measurement_kind": "measured",
+        "specification": spec,
+        "workload_id": digest(spec["program"]),
+        "environment": environment,
+        "environment_id": digest(environment),
+        "boundary": boundary,
+        "comparison": main,
+        "findings": findings,
+        "intervention_plans": plans,
+        "variants": variants,
+        "blocks": blocks,
+        "recommendations": [f["intervention"]["id"] for f in findings if f["supported"]],
+        "scope": "Supported contiguous FP32 Asterion IR only; controlled schedule effects, not compiler commit bisection or hardware root-cause proof.",
+    }
+
+
+def reshape(spec, shape):
+    result = dict(specification(spec))
+    p = Program.from_dict(result["program"])
+    result["program"] = replace(p, shape=tuple(shape)).to_dict()
+    return specification(result)
