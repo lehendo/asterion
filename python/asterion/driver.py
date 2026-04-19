@@ -121,3 +121,61 @@ class DriverModule:
                 return
 
 
+class DriverInvocation:
+    def __init__(self, module, bound):
+        self.module, self.bound = module, bound
+        self.output = bound.output
+        self.pointers = tuple(x.data_ptr() for x in (*bound.inputs, bound.output))
+        self.parameters = (
+            c.c_uint64 * (len(bound.inputs) + 1 + len(bound.kernel.program.shape) + 1)
+        )()
+
+    def launch(self):
+        module, bound = self.module, self.bound
+        torch = module.torch
+        p, s = bound.kernel.program, bound.kernel.schedule
+        tensors = (*bound.inputs, bound.output)
+        for tensor, shape in zip(tensors, (*bound.input_shapes, bound.output_shape)):
+            if (
+                tuple(tensor.shape) != shape
+                or not tensor.is_contiguous()
+                or tensor.dtype != torch.float32
+            ):
+                raise ValidationError("prepared native tensor metadata changed")
+            if tensor.device.index != torch.cuda.current_device():
+                raise ValidationError("prepared native tensor is not on current CUDA device")
+        if any(x.requires_grad for x in tensors):
+            raise ValidationError("prepared native inference tensors now require autograd")
+        stream = torch.cuda.current_stream()
+        for tensor in tensors:
+            tensor.record_stream(stream)
+        pointers = tuple(x.data_ptr() for x in tensors)
+        if pointers != self.pointers:
+            raise ValidationError("prepared native tensor storage changed")
+        values = pointers + tuple(p.shape) + (0,)
+        if p.operation == "gemm":
+            gx, gy = (
+                (p.shape[0] + s.tile_m - 1) // s.tile_m,
+                (p.shape[1] + s.tile_n - 1) // s.tile_n,
+            )
+        else:
+            block = s.block if p.operation == "pointwise" else s.rows
+            gx, gy = (p.shape[0] + block - 1) // block, 1
+        with module.lock:
+            if module.closed:
+                raise ValidationError("native driver module is closed")
+            for i, value in enumerate(values):
+                self.parameters[i] = value
+            module._check(
+                module.lib.asterion_driver_launch(
+                    module.handle,
+                    self.parameters,
+                    len(values),
+                    gx,
+                    gy,
+                    c.c_void_p(stream.cuda_stream),
+                    module.error,
+                    len(module.error),
+                )
+            )
+        return self.output
