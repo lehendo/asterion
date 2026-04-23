@@ -67,3 +67,39 @@ def expression(value, dimensions, parameters, *, depth=0):
     return result
 
 
+def configuration(spec, variant):
+    exact_keys(variant, {"entrypoint", "parameters"}, "variant")
+    identifier(variant["entrypoint"])
+    values = variant["parameters"]
+    if not isinstance(values, dict) or set(values) != set(spec["parameters"]):
+        raise ValidationError("configuration must supply every declared parameter")
+    for name, value in values.items():
+        domain = spec["parameters"][name]["values"]
+        if not any(digest(value) == digest(v) for v in domain):
+            raise ValidationError(f"{name} is outside its declared domain")
+    for constraint in spec["constraints"]:
+        exact_keys(constraint, {"left", "relation", "right"}, "constraint")
+        a = expression(constraint["left"], spec["dimensions"], values)
+        b = expression(constraint["right"], spec["dimensions"], values)
+        relation = constraint["relation"]
+        valid = (
+            a == b
+            if relation == "equal"
+            else a >= b
+            if relation == "at_least"
+            else a <= b
+            if relation == "at_most"
+            else None
+        )
+        if relation == "multiple_of":
+            integer(a, "multiple numerator")
+            integer(b, "multiple denominator")
+            valid = a % b == 0
+        if valid is not True:
+            raise ValidationError("configuration violates a declared constraint")
+    grid = [expression(x, spec["dimensions"], values) for x in spec["grid"]]
+    if any(type(x) is not int or not 1 <= x < 2**31 for x in grid) or math.prod(grid) >= 2**31:
+        raise ValidationError("grid must contain bounded positive integer dimensions")
+    return copy.deepcopy(variant)
+
+
