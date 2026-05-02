@@ -280,3 +280,12 @@ def specification(value):
         raise ValidationError(f"malformed external case: {exc}") from exc
 
 
+def source_path(spec, root):
+    path = artifact_path(root, spec["module"])
+    if path.stat().st_size > 1024 * 1024:
+        raise ValidationError("external module exceeds1MiB supported source bound")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != spec["source_sha256"]:
+        raise ValidationError("reviewed module source hash mismatch")
+    return path
+
+
