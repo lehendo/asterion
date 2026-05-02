@@ -289,3 +289,75 @@ def source_path(spec, root):
     return path
 
 
+def interventions(spec):
+    plans = []
+    for name, value in spec["baseline"]["parameters"].items():
+        candidate_value = spec["candidate"]["parameters"][name]
+        if digest(value) == digest(candidate_value):
+            continue
+        variant = copy.deepcopy(spec["candidate"])
+        variant["parameters"][name] = value
+        try:
+            configuration(spec, variant)
+            plans.append(
+                {
+                    "id": "undo_" + name,
+                    "parameter": name,
+                    "variant": variant,
+                    "status": "declared_legal",
+                }
+            )
+        except ValidationError as exc:
+            plans.append(
+                {
+                    "id": "undo_" + name,
+                    "parameter": name,
+                    "status": "unsupported",
+                    "reason": str(exc),
+                }
+            )
+    return plans
+
+
+def complexity(spec):
+    total = 0
+    for tensor in spec["tensors"].values():
+        shape = [expression(x, spec["dimensions"], {}) for x in tensor["shape"]]
+        total += math.prod(shape) * DTYPES[tensor["dtype"]]
+    return {
+        "measure": "declared_input_plus_output_bytes",
+        "value": total,
+        "excludes": "reference, validation, graph and compiler storage",
+    }
+
+
+def capabilities(kind):
+    if kind == "triton_case":
+        return {
+            "execute": True,
+            "validate": True,
+            "benchmark": True,
+            "declared_parameter_interventions": True,
+            "compiler_provenance": True,
+            "shape_reduction": True,
+            "standalone_export": True,
+            "arbitrary_source_rewriting": False,
+            "compiler_version_comparison": False,
+            "legality_guarantee": "user declaration plus empirical checks; no IR proof",
+        }
+    if kind == "regression_spec":
+        return {
+            "execute": True,
+            "validate": True,
+            "benchmark": True,
+            "legality_guarantee": "bounded Asterion IR verifier",
+            "compiler_version_comparison": False,
+        }
+    if kind == "trace":
+        return {
+            "execute": False,
+            "benchmark": False,
+            "standalone_export": False,
+            "passive_analysis": True,
+        }
+    raise ValidationError("unsupported workload adapter")
