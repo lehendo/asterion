@@ -103,3 +103,180 @@ def configuration(spec, variant):
     return copy.deepcopy(variant)
 
 
+def specification(value):
+    exact_keys(
+        value,
+        {
+            "schema_version",
+            "artifact_type",
+            "case_id",
+            "module",
+            "source_sha256",
+            "dimensions",
+            "tensors",
+            "arguments",
+            "parameters",
+            "baseline",
+            "candidate",
+            "grid",
+            "constraints",
+            "reference",
+            "numerical",
+            "measurement",
+            "origin",
+        },
+        "external case",
+    )
+    try:
+        if value["schema_version"] != 1 or value["artifact_type"] != "triton_case":
+            raise ValidationError("expected triton_case version1")
+        s = copy.deepcopy(value)
+        identifier(s["case_id"])
+        module = Path(s["module"])
+        if module.is_absolute() or ".." in module.parts or module.suffix != ".py":
+            raise ValidationError("module must be an artifact-relative Python file")
+        if module.parts[0] in {
+            "_support",
+            "_support.py",
+            "reproduce.py",
+            "case.json",
+            "manifest.json",
+            "worker-home",
+            "SUPPORT-LICENSE.txt",
+            "USAGE.txt",
+        }:
+            raise ValidationError("module collides with a reserved reproducer or worker path")
+        if not re.fullmatch(r"[0-9a-f]{64}", s["source_sha256"]):
+            raise ValidationError("source_sha256 must identify reviewed source")
+        dimensions = s["dimensions"]
+        if not isinstance(dimensions, dict) or not 1 <= len(dimensions) <= 8:
+            raise ValidationError("declare1..8 dimensions")
+        for name, n in dimensions.items():
+            identifier(name)
+            integer(n, name)
+            if n > 2**30:
+                raise ValidationError("dimension exceeds supported index bound")
+        tensors = s["tensors"]
+        if not isinstance(tensors, dict) or not 2 <= len(tensors) <= 8:
+            raise ValidationError("declare2..8 nonaliasing contiguous tensors")
+        allocated = 0
+        outputs = []
+        for name, tensor in tensors.items():
+            identifier(name)
+            exact_keys(tensor, {"shape", "dtype", "role", "generator"}, "tensor")
+            if tensor["dtype"] not in DTYPES or tensor["role"] not in {"input", "output"}:
+                raise ValidationError("unsupported tensor dtype or role")
+            if tensor.get("generator", "normal") not in {"normal", "ones"}:
+                raise ValidationError(
+                    "supported deterministic generators are normal and constant ones"
+                )
+            if tensor["role"] == "output" and "generator" in tensor:
+                raise ValidationError("only inputs declare generators")
+            if not isinstance(tensor["shape"], list) or not 1 <= len(tensor["shape"]) <= 4:
+                raise ValidationError("tensor rank must be1..4")
+            shape = [expression(x, dimensions, {}) for x in tensor["shape"]]
+            if any(type(n) is not int or n < 1 for n in shape) or math.prod(shape) >= 2**31:
+                raise ValidationError("invalid tensor shape/index range")
+            allocated += math.prod(shape) * DTYPES[tensor["dtype"]]
+            if tensor["role"] == "output":
+                outputs.append(name)
+        if len(outputs) != 1 or allocated > 2 * 1024 * 1024 * 1024:
+            raise ValidationError(
+                "one output and at most2GiB declared tensor storage supported; reference workspace is additional"
+            )
+        params = s["parameters"]
+        if not isinstance(params, dict) or len(params) > 12:
+            raise ValidationError("at most12 exposed parameters supported")
+        for name, parameter in params.items():
+            identifier(name)
+            exact_keys(parameter, {"kind", "values"}, "parameter")
+            if parameter["kind"] not in {"constexpr", "option"}:
+                raise ValidationError("parameter kind must be constexpr or option")
+            vals = parameter["values"]
+            if (
+                not isinstance(vals, list)
+                or not 1 <= len(vals) <= 16
+                or len({digest(v) for v in vals}) != len(vals)
+            ):
+                raise ValidationError("parameter domain must contain1..16 unique JSON scalars")
+            if any(
+                type(v) not in {int, float, bool, str} or (isinstance(v, str) and len(v) > 128)
+                for v in vals
+            ):
+                raise ValidationError("parameter domain contains unsupported values")
+            if parameter["kind"] == "option":
+                if name not in OPTIONS:
+                    raise ValidationError("unsupported compiler option")
+                if name == "num_warps" and any(
+                    type(v) is not int or v not in {1, 2, 4, 8, 16, 32} for v in vals
+                ):
+                    raise ValidationError("num_warps must be an exposed power of two1..32")
+                if name == "num_stages" and any(
+                    type(v) is not int or not 1 <= v <= 8 for v in vals
+                ):
+                    raise ValidationError("num_stages must be1..8")
+                if name == "enable_fp_fusion" and any(type(v) is not bool for v in vals):
+                    raise ValidationError("enable_fp_fusion must be boolean")
+        if not isinstance(s["arguments"], dict) or not 1 <= len(s["arguments"]) <= 32:
+            raise ValidationError("declare bounded named kernel arguments")
+        for name, binding in s["arguments"].items():
+            identifier(name)
+            if name in params:
+                raise ValidationError("runtime argument collides with exposed parameter")
+            if isinstance(binding, dict) and set(binding) == {"tensor"}:
+                if binding["tensor"] not in tensors:
+                    raise ValidationError("argument references unknown tensor")
+            else:
+                expression(binding, dimensions, {})
+        if not isinstance(s["grid"], list) or not 1 <= len(s["grid"]) <= 3:
+            raise ValidationError("grid rank must be1..3")
+        s.setdefault("constraints", [])
+        if not isinstance(s["constraints"], list) or len(s["constraints"]) > 32:
+            raise ValidationError("at most32 declarative constraints supported")
+        reference = s["reference"]
+        exact_keys(reference, {"entrypoint", "description"}, "trusted reference")
+        identifier(reference["entrypoint"])
+        if (
+            not isinstance(reference["description"], str)
+            or not 1 <= len(reference["description"]) <= 2048
+        ):
+            raise ValidationError("describe the independent application reference")
+        s["numerical"] = numerical_policy(s["numerical"])
+        measurement = {
+            "rounds": 20,
+            "launches": 100,
+            "warmup": 5,
+            "seed": 1729,
+            "threshold": 0.10,
+            "interventions": "changed",
+        }
+        exact_keys(s.get("measurement", {}), set(measurement), "measurement")
+        measurement.update(s.get("measurement", {}))
+        for key, low, high in (
+            ("rounds", 12, 100),
+            ("launches", 1, 1000),
+            ("warmup", 1, 100),
+            ("seed", 0, 2**31 - 1),
+        ):
+            integer(measurement[key], key, minimum=low)
+            if measurement[key] > high:
+                raise ValidationError(f"{key} exceeds bounded experiment limit")
+        if (
+            type(measurement["threshold"]) not in {int, float}
+            or not 0 < measurement["threshold"] <= 1
+        ):
+            raise ValidationError("threshold must be in(0,1]")
+        if measurement["interventions"] not in {"changed", "none"}:
+            raise ValidationError("interventions must be changed or none")
+        s["measurement"] = measurement
+        s.setdefault("origin", {})
+        exact_keys(s["origin"], {"url", "incident", "adaptations", "license"}, "origin")
+        if any(not isinstance(v, str) or len(v) > 4096 for v in s["origin"].values()):
+            raise ValidationError("origin values must be bounded descriptive strings")
+        s["baseline"] = configuration(s, s["baseline"])
+        s["candidate"] = configuration(s, s["candidate"])
+        return s
+    except (KeyError, TypeError, AttributeError, OverflowError, RecursionError) as exc:
+        raise ValidationError(f"malformed external case: {exc}") from exc
+
+
