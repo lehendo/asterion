@@ -109,3 +109,132 @@ def write_external_reduction_report(result, output):
     return path
 
 
+def write_external_report(result, output):
+    _bounded_report(result)
+    if result.get("artifact_type") != "external_diagnosis" or result.get("result_id") != digest(
+        {k: v for k, v in result.items() if k != "result_id"}
+    ):
+        raise ValidationError("external diagnosis integrity mismatch")
+    try:
+        status = result["status"]
+        spec = result["specification"]
+        comparison = result.get("comparison", {})
+        cards = [
+            ("Regression", status),
+            ("Numerical admission", result["numerical_status"]),
+            (
+                "Candidate / baseline",
+                f"{comparison['median_paired_ratio']:.3f}x" if comparison else "unavailable",
+            ),
+            (
+                "Graph device baseline → candidate",
+                f"{comparison['baseline_median_us']:.3f} → {comparison['candidate_median_us']:.3f} µs"
+                if comparison
+                else "unavailable",
+            ),
+            ("Helpful interventions", ", ".join(result["recommendations"]) or "none established"),
+        ]
+        escape = lambda value: html.escape(str(value))
+        card_html = "".join(
+            f"<article><small>{escape(k)}</small><h2>{escape(v)}</h2></article>" for k, v in cards
+        )
+        rows = []
+        for name, variant in result["variants"].items():
+            compiler = variant.get("compiler", {})
+            values = [
+                name,
+                variant.get("status", "unavailable"),
+                variant.get("configuration", {}).get("entrypoint", "unavailable"),
+                json.dumps(variant.get("configuration", {}).get("parameters", {}), sort_keys=True),
+                variant.get("grid", "unavailable"),
+                compiler.get("registers", "unavailable"),
+                compiler.get("spills", "unavailable"),
+                compiler.get("shared_bytes", "unavailable"),
+            ]
+            rows.append("<tr>" + "".join(f"<td>{escape(v)}</td>" for v in values) + "</tr>")
+        table = (
+            "<div class='table'><table><thead><tr>"
+            + "".join(
+                f"<th>{x}</th>"
+                for x in (
+                    "Variant",
+                    "Admission",
+                    "Entrypoint",
+                    "Declared parameters",
+                    "Grid",
+                    "Registers",
+                    "Spills",
+                    "Shared bytes",
+                )
+            )
+            + "</tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></div>"
+        )
+        if result["recommendations"]:
+            actions = []
+            for finding in result["findings"]:
+                if not finding.get("supported"):
+                    continue
+                label = (
+                    "Revert the complete source/configuration package"
+                    if finding.get("kind") == "full_variant_revert"
+                    else "Test the validated reversion of " + str(finding.get("parameter"))
+                )
+                actions.append(
+                    f"<li>{escape(label)}: <code>{escape(finding['intervention'])}</code>. {escape(finding['scope'])}.</li>"
+                )
+            action = "<h2>Action supported at this boundary</h2><ul>" + "".join(actions) + "</ul>"
+        else:
+            action = "<h2>Conclusion</h2><p>No helpful intervention is established. Review numerical admission and comparison uncertainty before drawing a performance conclusion.</p>"
+        sections = [
+            ("Workload and declared configurations", spec),
+            (
+                "Environment and source identity",
+                {
+                    "environment": result["environment"],
+                    "source": result["source_identity"],
+                    "engine_sources": result.get("engine_sources", {}),
+                },
+            ),
+            (
+                "LEVEL1 · Measured comparison and noise",
+                {
+                    "comparison": comparison,
+                    "noise": result.get("noise"),
+                    "protocol": result["measurement_protocol"],
+                },
+            ),
+            ("LEVEL2 · Controlled interventions", result["findings"]),
+            ("LEVEL3 · Numerical records and compiler evidence", result["variants"]),
+            ("LEVEL4 · Hardware mechanism", result["hardware_mechanism"]),
+            (
+                "Costs, capabilities and limitations",
+                {
+                    k: result.get(k)
+                    for k in (
+                        "elapsed_seconds",
+                        "time_to_first_comparison_seconds",
+                        "time_to_actionable_result_seconds",
+                        "measurement_seconds",
+                        "module_import_seconds",
+                        "experiment_counts",
+                        "capabilities",
+                        "limitations",
+                        "trust",
+                    )
+                },
+            ),
+        ]
+        body = "".join(
+            f"<details {'open' if i < 3 else ''}><summary>{escape(title)}</summary><pre>{html.escape(json.dumps(value, indent=2))}</pre></details>"
+            for i, (title, value) in enumerate(sections)
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValidationError(f"malformed external diagnosis: {exc}") from exc
+    page = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>Asterion regression laboratory</title><style>body{{margin:0;background:#101827;color:#e7edf6;font:16px/1.6 system-ui}}main{{max-width:1150px;margin:auto;padding:32px}}h1{{font-size:36px;margin-bottom:8px}}small{{color:#83dfca}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}}article,details{{background:#1b283b;padding:20px;border:1px solid #34445b;border-radius:12px;margin:16px 0}}h2{{font-size:19px;overflow-wrap:anywhere}}summary{{font-weight:650;cursor:pointer}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace}}code{{overflow-wrap:anywhere}}a{{color:#9ceada}}.table{{overflow-x:auto}}table{{border-collapse:collapse;font-size:13px;width:100%}}td,th{{text-align:left;padding:12px;border-bottom:1px solid #34445b;vertical-align:top;max-width:300px;overflow-wrap:anywhere}}th{{color:#83dfca}}</style><main><small>ASTERION · EXTERNAL KERNEL EXPERIMENT</small><h1>{escape(spec["case_id"])}</h1><p>Measured counterfactuals for explicitly trusted Triton source. Numerical admission covers the declared finite fixtures. Compiler metadata is not measured hardware occupancy or bandwidth.</p><section class="cards">{card_html}</section>{action}<h2>Executed variants</h2>{table}{body}<details><summary>Reproduce and interpret</summary><p>Use <code>asterion reproduce results.json --trusted-code --output replay</code> in a compatible trusted GPU environment. Exported Python is executable code. A numerically rejected configuration is never recommended. An inconclusive comparison does not establish equivalence. Inspect raw blocks in results.json.</p></details><small>Evidence identity {escape(result["result_id"])}</small></main></html>"""
+    root = Path(output)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "report.html"
+    path.write_text(page)
+    return path
