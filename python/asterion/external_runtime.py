@@ -192,3 +192,36 @@ def _prepare(spec, variant, inputs, module, torch, triton):
     return state
 
 
+def _artifacts(state, root, name):
+    compiled = state["launch"].compiled
+    folder = root / "code" / name
+    folder.mkdir(parents=True)
+    artifacts = {}
+    for kind in ("ttir", "ttgir", "llir", "ptx", "cubin"):
+        content = compiled.asm.get(kind)
+        if not isinstance(content, (str, bytes)):
+            continue
+        data = content.encode() if isinstance(content, str) else content
+        path = folder / ("kernel." + kind)
+        path.write_bytes(data)
+        artifacts[kind] = {
+            "path": str(path.relative_to(root)),
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    return {
+        "assembly": artifacts,
+        "compiled_hash": str(getattr(compiled, "hash", "unavailable")),
+        "compiler_options": {
+            k: getattr(compiled.metadata, k, None)
+            for k in ("num_warps", "num_stages", "num_ctas", "maxnreg", "enable_fp_fusion")
+        },
+        "registers": getattr(compiled, "n_regs", None),
+        "spills": getattr(compiled, "n_spills", None),
+        "shared_bytes": getattr(compiled.metadata, "shared", None),
+        "ptx_static": static_ptx_observations(compiled.asm.get("ptx")),
+        "category": "COMPILER_EVIDENCE",
+        "interpretation": "Compiler metadata, not measured hardware occupancy or bandwidth",
+    }
+
+
