@@ -60,3 +60,33 @@ def run_worker(args, *, env, cwd=None, timeout):
             process.communicate()
 
 
+def load_case(value, source_root=None):
+    root = Path(source_root or ".").resolve()
+    if isinstance(value, (str, Path)):
+        path = Path(value).resolve()
+        root = path.parent
+        value = read(path)
+    if not isinstance(value, dict):
+        raise ValidationError("external input must be a case or diagnosis object")
+    if value.get("artifact_type") == "external_diagnosis":
+        if value.get("result_id") != digest({k: v for k, v in value.items() if k != "result_id"}):
+            raise ValidationError("external diagnosis integrity mismatch")
+        value = value["specification"]
+        source = (root / "source").resolve()
+        if not source.is_relative_to(root):
+            raise ValidationError("saved source symlink escapes diagnosis artifact")
+        root = source
+    spec = specification(value)
+    source_path(spec, root)
+    return spec, root
+
+
+def _copy_input(spec, source, destination):
+    path = source_path(spec, source)
+    target = destination / spec["module"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(path, target)
+    atomic_json(destination / "case.json", spec)
+    source_path(spec, destination)
+
+
