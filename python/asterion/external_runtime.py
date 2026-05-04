@@ -108,3 +108,87 @@ def _target(torch, triton):
     }
 
 
+def _inputs(spec, torch, seed, pattern):
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    result = {}
+    for name, tensor in spec["tensors"].items():
+        if tensor["role"] != "input":
+            continue
+        shape = [expression(x, spec["dimensions"], {}) for x in tensor["shape"]]
+        dtype = getattr(torch, tensor["dtype"])
+        if tensor.get("generator") == "ones":
+            result[name] = torch.ones(shape, device="cuda", dtype=dtype)
+            continue
+        if dtype in {torch.int8, torch.int32}:
+            x = torch.randint(-3, 4, shape, device="cuda", dtype=dtype, generator=generator)
+            if pattern == "zeros":
+                x.zero_()
+            elif pattern == "alternating":
+                x = (torch.arange(x.numel(), device="cuda").reshape(shape) % 2 * 2 - 1).to(dtype)
+        else:
+            x = torch.randn(shape, device="cuda", dtype=torch.float32, generator=generator)
+            if pattern == "zeros":
+                x.zero_()
+            elif pattern == "alternating":
+                x = (torch.arange(x.numel(), device="cuda").reshape(shape) % 2 * 2 - 1).float()
+            elif pattern == "wide_finite":
+                x *= 8
+            x = x.to(dtype)
+        result[name] = x.contiguous()
+    return result
+
+
+class _KernelLaunch:
+    """Own tensors and the loaded binary without a state/closure reference cycle."""
+
+    def __init__(self, entry, grid, kwargs, output):
+        self.entry = entry
+        self.grid = grid
+        self.kwargs = kwargs
+        self.output = output
+        self.compiled = None
+
+    def __call__(self):
+        self.compiled = self.entry[self.grid](**self.kwargs)
+        return self.output
+
+
+def _prepare(spec, variant, inputs, module, torch, triton):
+    entry = getattr(module, variant["entrypoint"], None)
+    if not isinstance(entry, triton.runtime.jit.JITFunction):
+        raise ValidationError(
+            "entrypoint must be a plain triton.jit function; hidden autotuning/wrappers unsupported"
+        )
+    output_name = next(k for k, t in spec["tensors"].items() if t["role"] == "output")
+    decl = spec["tensors"][output_name]
+    shape = [expression(x, spec["dimensions"], {}) for x in decl["shape"]]
+    output = torch.empty(shape, device="cuda", dtype=getattr(torch, decl["dtype"]))
+    output.fill_(float("nan") if output.is_floating_point() else torch.iinfo(output.dtype).min)
+    tensors = {**inputs, output_name: output}
+    values = variant["parameters"]
+    kwargs = {
+        name: tensors[value["tensor"]]
+        if isinstance(value, dict) and set(value) == {"tensor"}
+        else expression(value, spec["dimensions"], {})
+        for name, value in spec["arguments"].items()
+    }
+    kwargs.update(values)
+    grid = tuple(expression(x, spec["dimensions"], values) for x in spec["grid"])
+    state = {
+        "launch": _KernelLaunch(entry, grid, kwargs, output),
+        "output": output,
+        "grid": list(grid),
+        "tensor_metadata": {
+            name: {
+                "shape": list(value.shape),
+                "stride": list(value.stride()),
+                "dtype": str(value.dtype),
+                "pointer_alignment_mod16": value.data_ptr() % 16,
+            }
+            for name, value in tensors.items()
+        },
+    }
+
+    return state
+
+
