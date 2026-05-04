@@ -546,3 +546,22 @@ def run(value, source_root, output):
     return result
 
 
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Execute reviewed trusted external Triton code; not a sandbox"
+    )
+    parser.add_argument("specification")
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--trusted-code", action="store_true")
+    args = parser.parse_args()
+    if not args.trusted_code:
+        parser.error("--trusted-code is required; source and reference are executable Python")
+    spec = Path(args.specification).resolve()
+    result = run(read(spec), spec.parent, args.output)
+    print(result["status"])
+
+
+if __name__ == "__main__":
+    main()
