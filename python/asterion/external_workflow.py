@@ -90,3 +90,30 @@ def _copy_input(spec, source, destination):
     source_path(spec, destination)
 
 
+def worker_environment(home):
+    """Remove credential variables/agents; this is not filesystem isolation."""
+    allowed = {
+        "PATH",
+        "LD_LIBRARY_PATH",
+        "PYTHONPATH",
+        "LANG",
+        "LC_ALL",
+        "CUDA_VISIBLE_DEVICES",
+        "CUDA_DEVICE_ORDER",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "TRITON_CACHE_DIR",
+        "CUDA_CACHE_PATH",
+        "PYTHONPYCACHEPREFIX",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "OMP_NUM_THREADS",
+        "ASTERION_REQUIRE_SLURM",
+        "SLURM_JOB_ID",
+        "SLURM_CPUS_PER_TASK",
+    }
+    env = {k: v for k, v in os.environ.items() if k in allowed}
+    env.update(HOME=str(home), PYTHONNOUSERSITE="1", PYTHONUNBUFFERED="1")
+    return env
+
+
