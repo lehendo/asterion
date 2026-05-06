@@ -203,3 +203,77 @@ def diagnose_external(value, output, *, trusted_code=False, source_root=None, ti
     return result
 
 
+def export_external(value, output, *, source_root=None):
+    spec, source = load_case(value, source_root)
+    root = Path(output)
+    if root.exists() and any(root.iterdir()):
+        raise ValidationError("standalone output must be new or empty")
+    root.mkdir(parents=True, exist_ok=True)
+    _copy_input(spec, source, root)
+    support = root / "_support"
+    support.mkdir()
+    (support / "__init__.py").write_text("")
+    for name in SUPPORT:
+        shutil.copyfile(Path(__file__).parent / name, support / name)
+    (
+        root / "reproduce.py"
+    ).write_text('''"""Run only reviewed trusted code; a Python subprocess is not a sandbox."""
+import sys
+from pathlib import Path
+
+if __name__ == "__main__":
+    import hashlib
+    import json
+    root = Path(__file__).resolve().parent
+    manifest_path = root / "manifest.json"
+    if manifest_path.stat().st_size > 512 * 1024:
+        raise SystemExit("Oversized reproducer manifest")
+    manifest = json.loads(manifest_path.read_text())
+    files = manifest.get("files", {})
+    if not isinstance(files, dict) or not 1 <= len(files) <= 32:
+        raise SystemExit("Invalid reproducer manifest")
+    for name, checksum in files.items():
+        relative = Path(name)
+        path = (root / relative).resolve()
+        if relative.is_absolute() or ".." in relative.parts or not path.is_relative_to(root):
+            raise SystemExit("Reproducer manifest path escapes bundle")
+        if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            raise SystemExit("Missing or oversized reproducer file: " + name)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != checksum:
+            raise SystemExit("Reproducer file integrity mismatch: " + name)
+    from _support.external_runtime import main
+    sys.argv = [sys.argv[0], str(root / "case.json"), *sys.argv[1:]]
+    main()
+''')
+    license_path = Path(__file__).parents[2] / "LICENSE"
+    if license_path.exists():
+        shutil.copyfile(license_path, root / "SUPPORT-LICENSE.txt")
+    else:
+        from importlib.metadata import distribution
+
+        dist = distribution("asterion-gpu")
+        license_file = next((p for p in dist.files or [] if p.name == "LICENSE"), None)
+        if license_file is None:
+            raise ValidationError(
+                "installed distribution must include the full MIT license for support export"
+            )
+        shutil.copyfile(dist.locate_file(license_file), root / "SUPPORT-LICENSE.txt")
+    (root / "USAGE.txt").write_text(
+        "Trusted standalone external-kernel experiment. No installed Asterion package required.\nRequires compatible torch/Triton/CUDA; original module keeps its own license.\nRun: python reproduce.py --trusted-code --output replay\nVendored MIT support performs the same measurement protocol, not an independent algorithmic replication.\nOnly exact declared source, parameters, dimensions and reference are run. No security sandbox, arbitrary source rewrite or hardware mechanism proof.\n"
+    )
+    files = {
+        str(p.relative_to(root)): __import__("hashlib").sha256(p.read_bytes()).hexdigest()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    atomic_json(
+        root / "manifest.json",
+        {
+            "artifact_type": "external_reproducer_manifest",
+            "source_sha256": spec["source_sha256"],
+            "files": files,
+            "human_effort": "unmeasured",
+            "execution": "explicitly trusted code only",
+        },
+    )
+    return root / "reproduce.py"
