@@ -66,3 +66,20 @@ def measure(fn, samples=30, warmup=10, launches=50):
     }
 
 
+def operation_reference(operation):
+    import torch
+
+    # Framework baselines bypass the IR interpreter so Dynamo sees ordinary tensor operations.
+    if operation == "pointwise":
+        return lambda x: torch.relu(x * 1.25 + 0.5)
+    if operation == "sum":
+        return lambda x: torch.sum(x, dim=1)
+    if operation == "max":
+        return lambda x: torch.amax(x, dim=1)
+    if operation == "softmax":
+        return lambda x: torch.softmax(x, dim=1)
+    if operation == "gemm":
+        return lambda x, y: torch.matmul(x, y)
+    raise ValidationError("unsupported baseline operation")
+
+
