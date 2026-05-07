@@ -83,3 +83,24 @@ def operation_reference(operation):
     raise ValidationError("unsupported baseline operation")
 
 
+def new_trace(spec):
+    env = capture()
+    env["gpu_runtime"] = target_manifest()
+    return {
+        "schema_version": 1,
+        "artifact_type": "trace",
+        "measurement_kind": "measured",
+        "timing_unit": "us",
+        "environment": env,
+        "workload": spec.to_dict(),
+        "spec_hash": digest(spec.to_dict()),
+        "records": [],
+        "boundary": "FP32 operation; primary device samples use CUDA Graph batches; eager host/launch-loop samples are separate. Each method records its allocation/launch call boundary.",
+        "caveats": [
+            "Prepared methods reuse outputs; eager/public runtime methods allocate. Consult per-method boundaries.",
+            "Events are steady-state launch-batched timings; compilation reported separately.",
+            "No counter evidence, causal mechanism or exclusive-node claim.",
+        ],
+    }
+
+
