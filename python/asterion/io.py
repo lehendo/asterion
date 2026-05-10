@@ -61,3 +61,35 @@ def atomic_json(path, value):
             os.unlink(name)
 
 
+def artifact_path(root, relative):
+    """Resolve an untrusted artifact-relative filename inside its declared root."""
+    root = Path(root).resolve()
+    relative = Path(relative)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValidationError("artifact path must remain inside its declared root")
+    result = (root / relative).resolve()
+    if not result.is_relative_to(root):
+        raise ValidationError("artifact symlink escapes its declared root")
+    return result
+
+
+def positive(value, field):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"{field} must be a positive finite number")
+    if not math.isfinite(value) or value <= 0:
+        raise ValidationError(f"{field} must be a positive finite number")
+    return float(value)
+
+
+def integer(value, field, minimum=1):
+    if type(value) is not int or value < minimum:
+        raise ValidationError(f"{field} must be an integer >= {minimum}")
+    return value
+
+
+def exact_keys(obj, allowed, context):
+    if not isinstance(obj, dict):
+        raise ValidationError(f"{context} must be an object")
+    unknown = set(obj) - set(allowed)
+    if unknown:
+        raise ValidationError(f"{context}: unknown fields {sorted(unknown)}")
