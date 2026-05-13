@@ -164,3 +164,65 @@ def verify(p):
     return ranks
 
 
+def make_program(operation, shape):
+    nodes = [Node("x", "input")]
+    if operation == "pointwise":
+        nodes += [
+            Node("scale", "const", value=1.25),
+            Node("bias", "const", value=0.5),
+            Node("scaled", "mul", ("x", "scale")),
+            Node("biased", "add", ("scaled", "bias")),
+            Node("out", "relu", ("biased",)),
+        ]
+    elif operation in {"sum", "max"}:
+        nodes += [Node("out", operation, ("x",))]
+    elif operation == "softmax":
+        nodes += [
+            Node("maximum", "max", ("x",)),
+            Node("shifted", "sub", ("x", "maximum")),
+            Node("exponents", "exp", ("shifted",)),
+            Node("denominator", "sum", ("exponents",)),
+            Node("out", "div", ("exponents", "denominator")),
+        ]
+    elif operation == "gemm":
+        nodes += [Node("y", "input"), Node("out", "matmul", ("x", "y"))]
+    else:
+        raise ValidationError("unsupported operation")
+    p = Program(operation, tuple(shape), tuple(nodes), "out")
+    verify(p)
+    return p
+
+
+def canonicalize(p):
+    """Pure SSA DCE and CSE; constant arithmetic uses no algebraic FP rewrites."""
+    verify(p)
+    live = set()
+    by_name = {n.name: n for n in p.nodes}
+
+    def visit(name):
+        if name in live:
+            return
+        live.add(name)
+        for arg in by_name[name].args:
+            visit(arg)
+
+    visit(p.output)
+    # Preserve input signature, even for an unused input.
+    live.update(n.name for n in p.nodes if n.op == "input")
+    names, seen, result = {}, {}, []
+    for n in p.nodes:
+        if n.name not in live:
+            continue
+        args = tuple(names.get(a, a) for a in n.args)
+        key = (n.op, args, n.value)
+        if n.op != "input" and key in seen:
+            names[n.name] = seen[key]
+            continue
+        result.append(replace(n, args=args))
+        seen[key] = n.name
+        names[n.name] = n.name
+    q = replace(p, nodes=tuple(result), output=names.get(p.output, p.output))
+    verify(q)
+    return q
+
+
