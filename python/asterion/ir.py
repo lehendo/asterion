@@ -85,3 +85,82 @@ class Program:
         return digest(self.to_dict())
 
 
+def verify(p):
+    if p.schema_version != 1 or p.operation not in OPERATIONS:
+        raise ValidationError("unsupported IR version/operation")
+    shape_check(p.shape, p.operation)
+    if p.dtype != "float32" or p.layout != "contiguous":
+        raise ValidationError("IR supports only contiguous float32")
+    if not p.nodes or len(p.nodes) > 128:
+        raise ValidationError("IR requires 1..128 nodes")
+    ranks, inputs = {}, 0
+    for n in p.nodes:
+        if (
+            not isinstance(n.name, str)
+            or not IDENT.fullmatch(n.name)
+            or n.name in ranks
+            or keyword.iskeyword(n.name)
+            or n.name
+            in {
+                "tl",
+                "triton",
+                "float",
+                "range",
+                "rr",
+                "cc",
+                "mask",
+                "idx",
+                "acc",
+                "rm",
+                "rn",
+                "rk",
+                "kk",
+                "outer",
+                "inner",
+            }
+        ):
+            raise ValidationError("SSA names must be unique safe identifiers")
+        if not isinstance(n.op, str) or n.op not in ARITY or len(n.args) != ARITY[n.op]:
+            raise ValidationError(f"{n.name}: invalid operation/arity")
+        if any(not isinstance(a, str) or a not in ranks for a in n.args):
+            raise ValidationError(f"{n.name}: use before definition")
+        if n.op == "const":
+            if (
+                isinstance(n.value, bool)
+                or not isinstance(n.value, (float, int))
+                or not math.isfinite(n.value)
+            ):
+                raise ValidationError("constant must be finite")
+            ranks[n.name] = "scalar"
+        elif n.op == "input":
+            inputs += 1
+            ranks[n.name] = "tensor"
+        elif n.op in {"sum", "max"}:
+            if p.operation not in {"sum", "max", "softmax"} or ranks[n.args[0]] != "tensor":
+                raise ValidationError("row reductions require a rank-2 tensor")
+            ranks[n.name] = "row"
+        elif n.op == "matmul":
+            if p.operation != "gemm" or any(ranks[a] != "tensor" for a in n.args):
+                raise ValidationError("matmul requires two tensor operands")
+            ranks[n.name] = "tensor"
+        else:
+            kinds = {ranks[a] for a in n.args}
+            ranks[n.name] = "tensor" if "tensor" in kinds else "row" if "row" in kinds else "scalar"
+    if inputs != (2 if p.operation == "gemm" else 1):
+        raise ValidationError("unsupported input arity")
+    expected = "row" if p.operation in {"sum", "max"} else "tensor"
+    if p.output not in ranks or ranks[p.output] != expected:
+        raise ValidationError("output rank does not match operation")
+    if p.operation == "gemm" and (
+        p.output != p.nodes[-1].name
+        or [(n.op, n.args) for n in p.nodes]
+        != [
+            ("input", ()),
+            ("input", ()),
+            ("matmul", (p.nodes[0].name, p.nodes[1].name)),
+        ]
+    ):
+        raise ValidationError("GEMM currently supports only a bounded pure contraction")
+    return ranks
+
+
