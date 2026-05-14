@@ -281,3 +281,76 @@ def verify_schedule_fields(s):
         raise ValidationError("unsupported unroll")
 
 
+def verify_schedule(p, s):
+    verify(p)
+    verify_schedule_fields(s)
+    if p.operation in {"sum", "max", "softmax"}:
+        padded = s.row_tile or 1 << (p.shape[1] - 1).bit_length()
+        if p.shape[1] > padded:
+            raise ValidationError("row width exceeds fixed schedule tile")
+        if padded > 16384 or s.rows * padded > 65536:
+            raise ValidationError("row tile exceeds supported 65536-element working set")
+        if not s.fusion:
+            raise ValidationError("unfused row reductions are not supported")
+    if p.operation == "gemm" and not s.fusion:
+        raise ValidationError("unfused GEMM is unsupported")
+    if p.operation != "gemm" and s.unroll != 1:
+        raise ValidationError("loop unroll is implemented only for GEMM")
+    return s
+
+
+def transform(p, s, **changes):
+    """A schedule rewrite with a serialized audit trail and legality check."""
+    allowed = {
+        "block",
+        "warps",
+        "rows",
+        "tile_m",
+        "tile_n",
+        "tile_k",
+        "unroll",
+        "fusion",
+        "row_tile",
+    }
+    if set(changes) - allowed:
+        raise ValidationError("unsupported schedule transformation")
+    after = replace(s, **changes)
+    verify_schedule(p, after)
+    return after, {
+        "before": s.to_dict(),
+        "after": after.to_dict(),
+        "changes": changes,
+        "program_hash": p.hash,
+        "legality": "checked",
+    }
+
+
+def candidates(p):
+    if p.operation == "pointwise":
+        variants = [
+            Schedule(block=b, warps=w, fusion=f)
+            for b in (128, 256, 1024)
+            for w in (4, 8)
+            for f in (True, False)
+        ]
+    elif p.operation == "gemm":
+        variants = [
+            Schedule(tile_m=m, tile_n=n, tile_k=k, warps=4, unroll=u)
+            for m, n, k in ((16, 32, 32), (32, 32, 32), (32, 64, 32), (64, 32, 32))
+            for u in (1, 2)
+        ]
+    else:
+        variants = [
+            Schedule(rows=r, warps=w, row_tile=t)
+            for t in (128, 1024, 4096, 16384)
+            for r in (1, 4)
+            for w in (4, 8)
+        ]
+    legal = []
+    for s in variants:
+        try:
+            verify_schedule(p, s)
+        except ValidationError:
+            continue
+        legal.append(s)
+    return legal
