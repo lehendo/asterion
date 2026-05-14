@@ -226,3 +226,58 @@ def canonicalize(p):
     return q
 
 
+@dataclass(frozen=True)
+class Schedule:
+    row_tile: int = 0
+    block: int = 256
+    warps: int = 4
+    rows: int = 1
+    tile_m: int = 32
+    tile_n: int = 32
+    tile_k: int = 32
+    unroll: int = 1
+    fusion: bool = True
+    schema_version: int = 1
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d):
+        exact_keys(d, cls.__dataclass_fields__, "schedule")
+        try:
+            s = cls(**d)
+        except TypeError as exc:
+            raise ValidationError(f"invalid schedule: {exc}") from exc
+        verify_schedule_fields(s)
+        return s
+
+    @property
+    def id(self):
+        return digest(self.to_dict())[:16]
+
+
+def verify_schedule_fields(s):
+    if s.schema_version != 1 or type(s.fusion) is not bool:
+        raise ValidationError("invalid schedule version/fusion")
+    for name in ("block", "warps", "rows", "tile_m", "tile_n", "tile_k", "unroll"):
+        value = getattr(s, name)
+        integer(value, name)
+        if value & (value - 1):
+            raise ValidationError(f"{name} must be a power of two")
+    if s.warps not in {1, 2, 4, 8} or s.rows not in {1, 2, 4, 8}:
+        raise ValidationError("unsupported warp/row mapping")
+    if (
+        not 32 <= s.block <= 4096
+        or not 16 <= s.tile_m <= 64
+        or not 16 <= s.tile_n <= 64
+        or not 16 <= s.tile_k <= 64
+    ):
+        raise ValidationError("schedule tile exceeds supported bounds")
+    integer(s.row_tile, "row_tile", minimum=0)
+    if s.row_tile and (s.row_tile > 16384 or s.row_tile & (s.row_tile - 1)):
+        raise ValidationError("row_tile must be zero (adaptive) or a power of two <=16384")
+    if s.unroll not in {1, 2, 4}:
+        raise ValidationError("unsupported unroll")
+
+
