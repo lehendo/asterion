@@ -40,3 +40,12 @@ def numerical_policy(value):
     return result
 
 
+def forward_gamma(length, significand_bits=24):
+    if type(length) is not int or length < 1:
+        raise ValidationError("reference must declare a positive accumulation length")
+    nu = 2 * length * 2.0 ** (-significand_bits)
+    if nu >= 0.5:
+        raise ValidationError("accumulation exceeds the bounded forward-error model")
+    return nu / (1 - nu)
+
+
