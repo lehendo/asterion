@@ -205,3 +205,12 @@ def fit_portfolio(
     return result
 
 
+def select(portfolio, shape):
+    d = portfolio["dispatcher"]
+    value = feature(shape)
+    if value < d["minimum"] or value > d["maximum"]:
+        return None, "outside_training_feature_range"
+    for rule in d["rules"]:
+        if value <= rule["upper_inclusive"]:
+            return rule["variant"], "metadata_rule"
+    return None, "uncovered_metadata"
