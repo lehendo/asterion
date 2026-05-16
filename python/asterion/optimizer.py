@@ -20,3 +20,11 @@ def feature(shape):
     return shape[-1]
 
 
+def objective(ratios, weights, risk=0.5, q=0.9):
+    if not ratios or len(ratios) != len(weights) or risk < 0 or not 0 <= q < 1:
+        raise ValidationError("invalid objective")
+    values = [math.log(positive(r, "latency ratio")) for r in ratios]
+    total = sum(positive(w, "weight") for w in weights)
+    return sum(v * w for v, w in zip(values, weights)) / total + risk * cvar(values, weights, q)
+
+
