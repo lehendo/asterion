@@ -57,3 +57,10 @@ def _validate_portfolio(p):
     }
 
 
+def validate_portfolio(p):
+    try:
+        return _validate_portfolio(p)
+    except (KeyError, TypeError, AttributeError, IndexError) as exc:
+        raise ValidationError(f"malformed portfolio: {exc}") from exc
+
+
