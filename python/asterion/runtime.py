@@ -64,3 +64,22 @@ def validate_portfolio(p):
         raise ValidationError(f"malformed portfolio: {exc}") from exc
 
 
+def input_shape(operation, inputs, torch):
+    if len(inputs) != (2 if operation == "gemm" else 1):
+        raise ValidationError("wrong number of runtime inputs")
+    for x in inputs:
+        if not isinstance(x, torch.Tensor) or not x.is_cuda or x.dtype != torch.float32:
+            raise ValidationError("runtime requires CUDA float32 tensors")
+        if not x.is_contiguous() or x.requires_grad:
+            raise ValidationError("runtime requires contiguous inference tensors")
+        if x.device.index != torch.cuda.current_device():
+            raise ValidationError("all inputs must be on the current CUDA device")
+    if operation == "gemm":
+        if inputs[0].ndim != 2 or inputs[1].ndim != 2 or inputs[0].shape[1] != inputs[1].shape[0]:
+            raise ValidationError("incompatible GEMM inputs")
+        shape = (inputs[0].shape[0], inputs[1].shape[1], inputs[0].shape[1])
+    else:
+        shape = tuple(inputs[0].shape)
+    return shape_check(shape, operation)
+
+
