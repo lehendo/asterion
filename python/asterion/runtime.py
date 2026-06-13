@@ -83,3 +83,20 @@ def input_shape(operation, inputs, torch):
     return shape_check(shape, operation)
 
 
+@dataclass
+class PreparedInvocation:
+    """Owns buffers and borrowed tensor owners; launch reuses its output intentionally."""
+
+    selection: dict
+    bound: object = None
+    fallback: object = None
+    preparation_wall_s: float = 0.0
+
+    def launch(self):
+        return self.bound.launch() if self.bound is not None else self.fallback()
+
+    @property
+    def output(self):
+        return self.bound.output if self.bound is not None else None
+
+
