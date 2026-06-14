@@ -100,3 +100,122 @@ class PreparedInvocation:
         return self.bound.output if self.bound is not None else None
 
 
+class Runtime:
+    """Inference runtime. Caller supplies finite data and explicit producer stream dependencies."""
+
+    def __init__(self, portfolio, *, check_finite=False, launch_backend="triton"):
+        validate_portfolio(portfolio)
+        if type(check_finite) is not bool:
+            raise ValidationError("check_finite must be boolean")
+        self.portfolio = copy.deepcopy(portfolio)
+        self.certificates = certificate_index(self.portfolio)
+        self.kernels = {}
+        self.plans = {}
+        self.last_selection = None
+        self.check_finite = check_finite
+        if launch_backend not in {"triton", "native"}:
+            raise ValidationError("launch_backend must be triton or native")
+        self.launch_backend = launch_backend
+        self.native_modules = {}
+        self.closed = False
+
+    def _plan(self, shape):
+        from .backend import Kernel, target_manifest
+
+        key = (tuple(shape), target_manifest()["uuid"])
+        if key in self.plans:
+            return self.plans[key]
+        variant, reason = select(self.portfolio, shape)
+        if self.portfolio.get("measurement_kind") != "measured":
+            variant, reason = None, "unverified_portfolio_provenance"
+        if self.portfolio.get("target") != target_manifest():
+            variant, reason = None, "target_mismatch"
+        certificate = self.certificates.get((variant, tuple(shape)))
+        if variant is not None and certificate is None:
+            variant, reason = None, "validation_certificate_missing"
+        kernel = None
+        if variant is not None:
+            program = make_program(self.portfolio["operation"], shape)
+            schedule = Schedule.from_dict(self.portfolio["variants"][variant])
+            verify_schedule(program, schedule)
+            cache_key = (variant, tuple(shape))
+            kernel = self.kernels.setdefault(cache_key, None)
+            if kernel is None:
+                kernel = self.kernels[cache_key] = Kernel(program, schedule)
+        plan = {
+            "variant": variant,
+            "reason": reason,
+            "kernel": kernel,
+            "certificate": certificate,
+            "binary_verified": False,
+        }
+        self.plans[key] = plan
+        return plan
+
+    def prepare(self, *inputs):
+        from .backend import binary_metadata, require_gpu
+        from .gpu import operation_reference
+
+        if self.closed:
+            raise ValidationError("runtime is closed")
+        started = time.perf_counter()
+        torch, _ = require_gpu()
+        op = self.portfolio["operation"]
+        shape = input_shape(op, inputs, torch)
+        if self.check_finite and any(not torch.isfinite(x).all().item() for x in inputs):
+            raise ValidationError("nonfinite input violates the finite numerical contract")
+        plan = self._plan(shape)
+        reason = plan["reason"]
+        kernel = plan["kernel"]
+        if kernel is not None and any(x.data_ptr() % 16 for x in inputs):
+            kernel, reason = None, "input_alignment_outside_certificate"
+        selection = {
+            "variant": plan["variant"] if kernel is not None else None,
+            "reason": reason,
+            "shape": list(shape),
+            "certificate_id": plan["certificate"]["certificate_id"] if kernel is not None else None,
+        }
+        if kernel is None:
+            baseline = operation_reference(op)
+            invocation = PreparedInvocation(selection, fallback=lambda: baseline(*inputs))
+        else:
+            bound = kernel.prepare(*inputs)
+            if not plan["binary_verified"]:
+                bound.launch()
+                actual = binary_metadata(bound)["compiled_binary_hashes"]
+                if actual != plan["certificate"]["compiled_binary_hashes"]:
+                    raise ValidationError("compiled binary differs from validated certificate")
+                plan["binary_verified"] = True
+            if self.launch_backend == "native":
+                from .driver import DriverModule
+
+                module = self.native_modules.get(kernel.key)
+                if module is None:
+                    # Initialize Triton metadata on each shape-specific bound object.
+                    if not hasattr(bound, "last_compiled"):
+                        bound.launch()
+                    module = DriverModule(bound.last_compiled, kernel)
+                    self.native_modules[kernel.key] = module
+                bound = module.bind(bound)
+            selection["launch_backend"] = self.launch_backend
+            invocation = PreparedInvocation(selection, bound=bound)
+        invocation.preparation_wall_s = time.perf_counter() - started
+        self.last_selection = selection
+        return invocation
+
+    def close(self):
+        """Wait for launches and unload owned modules; invalidates prepared native invocations.
+
+        Retain the runtime and prepared invocations until all CUDA Graph replays finish.
+        Never replay a graph after close(). Close uses a context-wide barrier if
+        graphs were captured; ordinary launches use per-stream completion events.
+        The caller owns producer dependencies.
+        """
+        self.closed = True
+        for module in self.native_modules.values():
+            module.close()
+        self.native_modules.clear()
+
+    def __call__(self, *inputs):
+        # Each invocation gets fresh output ownership. prepare() explicitly opts into reuse.
+        return self.prepare(*inputs).launch()
