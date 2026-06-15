@@ -31,3 +31,11 @@ def shape_check(shape, operation):
     return result
 
 
+@dataclass(frozen=True)
+class Case:
+    id: str
+    shape: tuple[int, ...]
+    split: str
+    weight: float = 1.0
+
+
