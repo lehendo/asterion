@@ -39,3 +39,72 @@ class Case:
     weight: float = 1.0
 
 
+@dataclass(frozen=True)
+class WorkloadSpec:
+    operation: str
+    cases: tuple[Case, ...]
+    seed: int = 1729
+    dtype: str = "float32"
+    layout: str = "contiguous"
+    rtol: float = 1e-4
+    atol: float = 1e-5
+    schema_version: int = 1
+
+    @classmethod
+    def from_dict(cls, data):
+        exact_keys(
+            data,
+            {"schema_version", "operation", "cases", "seed", "dtype", "layout", "rtol", "atol"},
+            "workload",
+        )
+        if data.get("schema_version") != 1:
+            raise ValidationError("unsupported workload schema_version; expected 1")
+        op = data.get("operation")
+        if op not in OPERATIONS:
+            raise ValidationError(f"unsupported operation {op!r}")
+        if (
+            data.get("dtype", "float32") != "float32"
+            or data.get("layout", "contiguous") != "contiguous"
+        ):
+            raise ValidationError("only contiguous float32 is supported")
+        entries = data.get("cases")
+        if not isinstance(entries, list) or not entries:
+            raise ValidationError("cases must be a nonempty array")
+        cases, ids, shapes = [], set(), set()
+        for item in entries:
+            exact_keys(item, {"id", "shape", "split", "weight"}, "case")
+            name = item.get("id")
+            if not isinstance(name, str) or not name or name in ids:
+                raise ValidationError("case id must be a unique nonempty string")
+            split = item.get("split")
+            if split not in SPLITS:
+                raise ValidationError("case split must be train, validation or test")
+            shape = shape_check(item.get("shape"), op)
+            if shape in shapes:
+                raise ValidationError(
+                    "duplicate shapes across cases/splits would leak evaluation data"
+                )
+            cases.append(Case(name, shape, split, positive(item.get("weight", 1), "weight")))
+            ids.add(name)
+            shapes.add(shape)
+        seed = integer(data.get("seed", 1729), "seed", minimum=0)
+        return cls(
+            op,
+            tuple(cases),
+            seed,
+            "float32",
+            "contiguous",
+            positive(data.get("rtol", 1e-4), "rtol"),
+            positive(data.get("atol", 1e-5), "atol"),
+        )
+
+    @classmethod
+    def from_yaml(cls, path: str | Path):
+        return cls.from_dict(read(path))
+
+    def to_dict(self):
+        result = asdict(self)
+        result["cases"] = [{**asdict(c), "shape": list(c.shape)} for c in self.cases]
+        return result
+
+
