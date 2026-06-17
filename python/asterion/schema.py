@@ -108,3 +108,46 @@ class WorkloadSpec:
         return result
 
 
+def validate_trace(data):
+    if data.get("schema_version") != 1 or data.get("artifact_type") != "trace":
+        raise ValidationError("expected version 1 trace artifact")
+    if data.get("measurement_kind") not in ("measured", "simulated_fixture"):
+        raise ValidationError("trace measurement_kind must be measured or simulated_fixture")
+    if data.get("timing_unit") != "us":
+        raise ValidationError("trace timing_unit must be us")
+    if not isinstance(data.get("environment"), dict):
+        raise ValidationError("trace must contain environment provenance")
+    records = data.get("records")
+    if not isinstance(records, list) or not records:
+        raise ValidationError("trace records must be nonempty")
+    keys = set()
+    for r in records:
+        if not isinstance(r, dict):
+            raise ValidationError("each trace record must be an object")
+        if r.get("operation") not in OPERATIONS:
+            raise ValidationError("invalid trace operation")
+        shape_check(r.get("shape"), r["operation"])
+        if r.get("dtype") != "float32" or r.get("layout") != "contiguous":
+            raise ValidationError("unsupported trace dtype/layout")
+        if r.get("split") not in SPLITS or not isinstance(r.get("case_id"), str):
+            raise ValidationError("record requires case_id and declared split")
+        if not isinstance(r.get("variant"), str) or not r["variant"]:
+            raise ValidationError("record requires variant")
+        key = (r["case_id"], r["variant"])
+        if key in keys:
+            raise ValidationError("duplicate case/variant trace record")
+        keys.add(key)
+        positive(r.get("weight"), "weight")
+        if r.get("status") not in ("ok", "error", "unsupported"):
+            raise ValidationError("record status must be ok, error, or unsupported")
+        if r["status"] == "ok":
+            if r.get("correctness") != "passed":
+                raise ValidationError("successful timings require correctness=passed")
+            samples = r.get("device_us")
+            if not isinstance(samples, list) or not samples:
+                raise ValidationError("successful records require raw device_us samples")
+            for s in samples:
+                positive(s, "device_us")
+        elif not isinstance(r.get("error"), str) or not r["error"]:
+            raise ValidationError("failed/unsupported records require a reason")
+    return data
