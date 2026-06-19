@@ -41,3 +41,36 @@ def summary(samples):
     }
 
 
+def ratio_interval(baseline, candidate, seed=1729, draws=500):
+    # Independent nonparametric bootstrap of the ratio of sample medians.
+    # Descriptive only; independence/stationarity are not proven by this interval.
+    if min(len(baseline), len(candidate)) < 5:
+        return None
+    rng = random.Random(seed)
+    values = []
+    for _ in range(draws):
+        a = statistics.median(rng.choices(baseline, k=len(baseline)))
+        b = statistics.median(rng.choices(candidate, k=len(candidate)))
+        values.append(b / a)
+    return [
+        weighted_quantile(values, [1] * draws, 0.025),
+        weighted_quantile(values, [1] * draws, 0.975),
+    ]
+
+
+def cvar(values, weights, q=0.95):
+    """Upper-tail weighted mean, including fractional mass at the quantile."""
+    if not 0 <= q < 1 or not values or len(values) != len(weights):
+        raise ValidationError("invalid CVaR inputs")
+    if any(not math.isfinite(v) for v in values):
+        raise ValidationError("CVaR values must be finite")
+    total = sum(positive(w, "weight") for w in weights)
+    mass = (1 - q) * total
+    remaining, cost = mass, 0.0
+    for value, weight in sorted(zip(values, weights), reverse=True):
+        take = min(weight, remaining)
+        cost += value * take
+        remaining -= take
+        if remaining <= total * 1e-14:
+            break
+    return cost / mass
