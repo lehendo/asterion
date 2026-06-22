@@ -84,3 +84,48 @@ def validate_certificate(certificate, portfolio, variant):
         raise ValidationError(f"malformed validation certificate: {exc}") from exc
 
 
+def certificate_index(portfolio):
+    index = {}
+    binaries = {}
+    for c in portfolio.get("validation_certificates", []):
+        variant = c.get("variant")
+        if variant not in portfolio["variants"]:
+            raise ValidationError("certificate references an unknown variant")
+        shape = validate_certificate(c, portfolio, variant)
+        key = (variant, shape)
+        if key in index:
+            raise ValidationError("duplicate validation certificate for variant/shape")
+        identity = (c["kernel_key"], tuple(c["compiled_binary_hashes"]), c["generated_code_bytes"])
+        if variant in binaries and binaries[variant] != identity:
+            raise ValidationError("one portfolio variant requires inconsistent compiled binaries")
+        binaries[variant] = identity
+        index[key] = c
+    if sum(identity[2] for identity in binaries.values()) > portfolio["max_code_bytes"]:
+        raise ValidationError("validated compiled binaries exceed code budget")
+    return index
+
+
+def pattern_inputs(program, pattern, seed):
+    from .backend import make_inputs, require_gpu
+
+    torch, _ = require_gpu()
+    values = make_inputs(program, seed)
+    if pattern == "normal":
+        return values
+    if pattern == "zeros":
+        return tuple(torch.zeros_like(x) for x in values)
+    outputs = []
+    for x in values:
+        idx = torch.arange(x.numel(), device=x.device).reshape(x.shape)
+        if pattern == "alternating":
+            outputs.append(torch.where(idx % 2 == 0, 1.0, -1.0).to(torch.float32))
+        elif pattern == "wide_finite":
+            scale = 80.0 if program.operation == "softmax" else 4.0
+            outputs.append(
+                torch.linspace(-scale, scale, x.numel(), device=x.device).reshape(x.shape)
+            )
+        else:
+            raise ValidationError("unknown numerical test pattern")
+    return tuple(outputs)
+
+
