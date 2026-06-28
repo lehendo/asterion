@@ -129,3 +129,73 @@ def pattern_inputs(program, pattern, seed):
     return tuple(outputs)
 
 
+def certify_variant(program, schedule, variant, *, rtol=1e-4, atol=1e-5, seeds=DEFAULT_SEEDS):
+    from .backend import Kernel, binary_metadata, reference, require_gpu
+
+    torch, _ = require_gpu()
+    positive(rtol, "rtol")
+    positive(atol, "atol")
+    for seed in seeds:
+        integer(seed, "seed", minimum=0)
+    if not seeds or len(set(seeds)) != len(seeds):
+        raise ValidationError("certification needs unique seeds")
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.set_float32_matmul_precision("highest")
+    kernel = Kernel(program, schedule)
+    checks, signature = [], None
+    for pattern in PATTERNS:
+        for seed in seeds:
+            inputs = pattern_inputs(program, pattern, seed)
+            expected = reference(program, *(x.double() for x in inputs)).float()
+            bound = kernel.prepare(*inputs)
+            actual = bound.launch()
+            torch.cuda.current_stream().synchronize()
+            try:
+                torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
+            except AssertionError as exc:
+                raise ValidationError(
+                    f"numerical validation failed for {pattern}/{seed}: {exc}"
+                ) from exc
+            metadata = binary_metadata(bound)
+            current = metadata["compiled_binary_hashes"]
+            if signature is not None and signature != current:
+                raise ValidationError("numerical suite compiled inconsistent binaries")
+            signature = current
+            difference = (actual - expected).abs()
+            checks.append(
+                {
+                    "pattern": pattern,
+                    "seed": seed,
+                    "passed": True,
+                    "max_absolute_error": difference.max().item(),
+                }
+            )
+    return seal(
+        {
+            "schema_version": 1,
+            "artifact_type": "validation_certificate",
+            "measurement_kind": "measured",
+            "status": "passed",
+            "operation": program.operation,
+            "shape": list(program.shape),
+            "dtype": "float32",
+            "layout": "contiguous",
+            "input_contract": "finite_float32_contiguous_aligned16",
+            "variant": variant,
+            "schedule": schedule.to_dict(),
+            "target": kernel.target,
+            "program_hash": program.hash,
+            "kernel_key": kernel.key,
+            "compiled_binary_hashes": signature,
+            "generated_code_bytes": metadata["generated_code_bytes"],
+            "reference": "operation IR evaluated in torch float64, cast to float32",
+            "rtol": rtol,
+            "atol": atol,
+            "seeds": list(seeds),
+            "checks": checks,
+            "checked_at": datetime.now(UTC).isoformat(),
+            "guarantee": "empirical checks for this exact shape, implementation and target; not proof for all finite input values",
+        }
+    )
+
+
