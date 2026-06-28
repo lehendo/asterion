@@ -199,3 +199,41 @@ def certify_variant(program, schedule, variant, *, rtol=1e-4, atol=1e-5, seeds=D
     )
 
 
+def certify_portfolio(portfolio, shapes, *, rtol=1e-4, atol=1e-5, seeds=DEFAULT_SEEDS):
+    from .optimizer import select
+    from .runtime import validate_portfolio
+
+    validate_portfolio(portfolio)
+    result = copy.deepcopy(portfolio)
+    index = certificate_index(result)
+    attempts = []
+    for raw_shape in shapes:
+        shape = shape_check(raw_shape, result["operation"])
+        variant, reason = select(result, shape)
+        if variant is None:
+            attempts.append({"shape": list(shape), "status": "unsupported", "reason": reason})
+            continue
+        # A failed recheck must revoke earlier authorization for this shape.
+        index.pop((variant, shape), None)
+        try:
+            program = make_program(result["operation"], shape)
+            schedule = Schedule.from_dict(result["variants"][variant])
+            verify_schedule(program, schedule)
+            certificate = certify_variant(
+                program, schedule, variant, rtol=rtol, atol=atol, seeds=seeds
+            )
+            if certificate["target"] != result["target"]:
+                raise ValidationError("certification target differs from portfolio")
+            index[(variant, shape)] = certificate
+            attempts.append({"shape": list(shape), "variant": variant, "status": "passed"})
+        except ValidationError as exc:
+            attempts.append(
+                {"shape": list(shape), "variant": variant, "status": "failed", "reason": str(exc)}
+            )
+    result["validation_certificates"] = list(index.values())
+    result["validation_attempts"] = attempts
+    result["validation_contract_version"] = 1
+    costs = {c["variant"]: c["generated_code_bytes"] for c in index.values()}
+    result["validated_generated_code_bytes"] = sum(costs.values())
+    certificate_index(result)
+    return seal(result, "integrity_hash")
