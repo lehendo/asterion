@@ -95,3 +95,54 @@ def test_native_rejects_rebound_storage():
     module.close()
 
 
+def test_native_runtime_certificate_and_module_reuse():
+    torch, _ = require_gpu()
+    shapes = [(3, 17), (4, 33)]
+    s = Schedule(row_tile=64)
+    records = []
+    for shape in shapes:
+        p = make_program("softmax", shape)
+        bound = Kernel(p, s).prepare(*make_inputs(p, 76))
+        bound.launch()
+        records.append(
+            {
+                "case_id": str(shape),
+                "operation": "softmax",
+                "shape": shape,
+                "split": "train",
+                "dtype": "float32",
+                "layout": "contiguous",
+                "weight": 1.0,
+                "variant": s.id,
+                "schedule": s.to_dict(),
+                **binary_metadata(bound),
+                "status": "ok",
+                "correctness": "passed",
+                "device_us": [1.0] * 5,
+            }
+        )
+    trace = {
+        "schema_version": 1,
+        "artifact_type": "trace",
+        "measurement_kind": "measured",
+        "timing_unit": "us",
+        "environment": {"gpu_runtime": target_manifest()},
+        "records": records,
+    }
+    portfolio = certify_portfolio(fit_portfolio(trace, max_variants=1), shapes, seeds=(1729,))
+    runtime = Runtime(portfolio, launch_backend="native")
+    prepared = []
+    for shape in shapes:
+        x = make_inputs(make_program("softmax", shape), 77)[0]
+        invocation = runtime.prepare(x)
+        assert invocation.selection["launch_backend"] == "native"
+        torch.testing.assert_close(invocation.launch(), torch.softmax(x, 1), rtol=1e-4, atol=1e-5)
+        prepared.append(invocation)
+    assert len(runtime.native_modules) == 1
+    runtime.close()
+    with pytest.raises(ValidationError, match="closed"):
+        prepared[0].launch()
+    with pytest.raises(ValidationError, match="closed"):
+        runtime.prepare(x)
+
+
