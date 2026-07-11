@@ -57,3 +57,41 @@ def test_native_matches_generated_binary_on_current_stream(operation, shape):
         native.launch()
 
 
+def test_graph_replay_and_borrowed_tensor_lifetime():
+    torch, _ = require_gpu()
+    p = make_program("softmax", (17, 129))
+    bound = Kernel(p, Schedule()).prepare(*make_inputs(p, 74))
+    bound.launch()
+    module = DriverModule(bound.last_compiled, bound.kernel)
+    native = module.bind(bound)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        native.launch()  # create per-stream completion event outside capture
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        native.launch()
+    graph.replay()
+    graph.replay()
+    torch.cuda.synchronize()
+    torch.testing.assert_close(
+        native.output, torch.softmax(bound.inputs[0], 1), rtol=1e-4, atol=1e-5
+    )
+    del graph  # prepared invocation/module must outlive graph use
+    module.close()
+
+
+def test_native_rejects_rebound_storage():
+    torch, _ = require_gpu()
+    p = make_program("pointwise", (17,))
+    bound = Kernel(p, Schedule()).prepare(*make_inputs(p, 75))
+    bound.launch()
+    module = DriverModule(bound.last_compiled, bound.kernel)
+    native = module.bind(bound)
+    bound.inputs[0].set_(torch.empty_like(bound.inputs[0]))
+    with pytest.raises(ValidationError, match="storage changed"):
+        native.launch()
+    module.close()
+
+
