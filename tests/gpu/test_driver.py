@@ -146,3 +146,46 @@ def test_native_runtime_certificate_and_module_reuse():
         runtime.prepare(x)
 
 
+def test_unfused_native_program_is_explicitly_unsupported():
+    p = make_program("pointwise", (17,))
+    bound = Kernel(p, Schedule(fusion=False)).prepare(*make_inputs(p, 78))
+    bound.launch()
+    # Module may represent only the final stage; never expose it as the full DAG.
+    module = DriverModule(bound.last_compiled, bound.kernel)
+    with pytest.raises(ValidationError, match="single-kernel"):
+        module.bind(bound)
+    module.close()
+
+
+def test_shared_module_concurrent_bound_arguments():
+    from concurrent.futures import ThreadPoolExecutor
+
+    torch, _ = require_gpu()
+    schedule = Schedule(row_tile=64)
+    bounds = []
+    for shape in ((3, 17), (4, 33)):
+        program = make_program("softmax", shape)
+        bound = Kernel(program, schedule).prepare(*make_inputs(program, 79))
+        bound.launch()
+        bounds.append(bound)
+    torch.cuda.synchronize()
+    module = DriverModule(bounds[0].last_compiled, bounds[0].kernel)
+    invocations = [module.bind(b) for b in bounds]
+
+    def launch(invocation):
+        torch.cuda.set_device(0)
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
+            for _ in range(10):
+                invocation.launch()
+        stream.synchronize()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(launch, invocations))
+    for bound in bounds:
+        torch.testing.assert_close(
+            bound.output, torch.softmax(bound.inputs[0], 1), rtol=1e-4, atol=1e-5
+        )
+    module.close()
+
+
