@@ -189,3 +189,45 @@ def test_shared_module_concurrent_bound_arguments():
     module.close()
 
 
+def test_driver_rejects_foreign_current_context():
+    import ctypes as c
+
+    _torch, _ = require_gpu()
+    program = make_program("pointwise", (17,))
+    bound = Kernel(program, Schedule()).prepare(*make_inputs(program, 80))
+    bound.launch()
+    module = DriverModule(bound.last_compiled, bound.kernel)
+    cuda = c.CDLL("libcuda.so.1")
+    cuda.cuCtxCreate_v2.argtypes = [c.POINTER(c.c_void_p), c.c_uint, c.c_int]
+    cuda.cuCtxPopCurrent_v2.argtypes = [c.POINTER(c.c_void_p)]
+    cuda.cuCtxDestroy_v2.argtypes = [c.c_void_p]
+    foreign = c.c_void_p()
+    assert cuda.cuCtxCreate_v2(c.byref(foreign), 0, 0) == 0
+    try:
+        parameters = (c.c_uint64 * 4)(bound.inputs[0].data_ptr(), bound.output.data_ptr(), 17, 0)
+        status = module.lib.asterion_driver_launch(
+            module.handle, parameters, 4, 1, 1, c.c_void_p(), module.error, len(module.error)
+        )
+        assert status != 0
+        assert b"context differs" in module.error.value
+    finally:
+        popped = c.c_void_p()
+        assert cuda.cuCtxPopCurrent_v2(c.byref(popped)) == 0
+        assert popped.value == foreign.value
+        assert cuda.cuCtxDestroy_v2(foreign) == 0
+    module.close()
+
+
+def test_module_rejects_unrelated_bound_kernel():
+    p = make_program("softmax", (3, 17))
+    bound = Kernel(p, Schedule()).prepare(*make_inputs(p, 81))
+    bound.launch()
+    module = DriverModule(bound.last_compiled, bound.kernel)
+    q = make_program("sum", (3, 17))
+    other = Kernel(q, Schedule()).prepare(*make_inputs(q, 82))
+    with pytest.raises(ValidationError, match="identity differ"):
+        module.bind(other)
+    bound.inputs[0].requires_grad_(True)
+    with pytest.raises(ValidationError, match="autograd"):
+        module.bind(bound).launch()
+    module.close()
