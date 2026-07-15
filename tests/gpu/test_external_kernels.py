@@ -47,3 +47,36 @@ def test_external_literal_kernel_validation_and_provenance(tmp_path):
     assert (tmp_path / "literal/report.html").exists()
 
 
+def test_numerical_failure_is_not_no_regression(tmp_path):
+    source = Path(__file__).parents[2] / "examples"
+    spec = read(source / "external_add.json")
+    spec["dimensions"]["N"] = 1031
+    spec["candidate"]["entrypoint"] = "wrong_kernel"
+    spec["measurement"].update(rounds=12, launches=1)
+    result = run(spec, source, tmp_path / "invalid")
+    assert result["status"] == "NUMERICAL_FAILURE"
+    assert result["timing_status"] == "UNAVAILABLE"
+    assert not result["detection_blocks"] and not result["recommendations"]
+
+
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16", "int8", "int32"])
+def test_declared_external_dtypes_and_masked_boundary(dtype, tmp_path):
+    source = Path(__file__).parents[2] / "examples"
+    spec = read(source / "external_add.json")
+    spec["dimensions"]["N"] = 33
+    for tensor in spec["tensors"].values():
+        tensor["dtype"] = dtype
+    if dtype in {"float16", "bfloat16"}:
+        spec["reference"]["entrypoint"] = "reference_" + dtype
+    spec["reference"]["description"] = (
+        "Independent FP64 sum rounded to declared output dtype; integer inputs are bounded -3..3"
+    )
+    spec["numerical"] = {
+        "kind": "exact",
+        "justification": "One rounded addition on the declared finite dtype/input domain, no reassociation or fusion; matching separately rounded reference",
+    }
+    spec["measurement"].update(rounds=12, launches=1, interventions="none")
+    result = run(spec, source, tmp_path / dtype)
+    assert result["numerical_status"] == "ACCEPTED_TESTED_DOMAIN"
+    assert result["timing_status"] == "MEASURED"
+    assert all(len(v["checks"]) == 8 for v in result["variants"].values())
