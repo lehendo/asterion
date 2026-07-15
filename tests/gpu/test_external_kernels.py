@@ -29,3 +29,21 @@ def test_repeated_external_capture_with_aggressive_collection(tmp_path):
         gc.set_threshold(*threshold)
 
 
+def test_external_literal_kernel_validation_and_provenance(tmp_path):
+    source = Path(__file__).parents[2] / "examples"
+    spec = read(source / "external_add.json")
+    spec["measurement"].update(rounds=12, launches=10)
+    result = run(spec, source, tmp_path / "literal")
+    assert result["numerical_status"] == "ACCEPTED_TESTED_DOMAIN"
+    assert result["timing_status"] == "MEASURED"
+    assert len(result["detection_blocks"]) == 12
+    for name in ("baseline", "candidate"):
+        record = result["variants"][name]
+        assert len(record["checks"]) == 8 and all(c["passed"] for c in record["checks"])
+        assert record["compiler"]["assembly"]["cubin"]["sha256"]
+    if result["status"] == "REGRESSION_ESTABLISHED":
+        assert result["variants"]["undo_BLOCK"]["status"] == "ACCEPTED"
+        assert result["intervention_blocks"]
+    assert (tmp_path / "literal/report.html").exists()
+
+
