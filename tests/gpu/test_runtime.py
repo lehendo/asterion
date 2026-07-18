@@ -66,3 +66,15 @@ def test_real_measurement_portfolio_dispatch_and_safe_fallback(monkeypatch):
     assert wrong.last_selection["reason"] == "target_mismatch"
 
 
+def test_prepared_metadata_mutation_is_rejected():
+    from asterion.io import ValidationError
+
+    _torch, _ = require_gpu()
+    p = make_program("pointwise", (17,))
+    x = make_inputs(p, 1729)[0]
+    bound = Kernel(p, Schedule()).prepare(x)
+    x.resize_(1)
+    with pytest.raises(ValidationError, match="metadata changed"):
+        bound.launch()
+
+
