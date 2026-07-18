@@ -100,3 +100,45 @@ def test_runtime_rejects_layout_dtype_and_grad(torch):
         k(torch.randn(17, device="cuda", requires_grad=True))
 
 
+def test_generic_ir_expression_and_cache_reuse(torch):
+    p = Program(
+        "pointwise",
+        (1027,),
+        (
+            Node("x", "input"),
+            Node("squared", "mul", ("x", "x")),
+            Node("out", "add", ("squared", "x")),
+        ),
+        "out",
+    )
+    x = make_inputs(p, 7)[0]
+    for fusion in (False, True):
+        k = Kernel(p, Schedule(fusion=fusion))
+        torch.testing.assert_close(k(x), x * x + x)
+        assert k.key == Kernel(p, Schedule(fusion=fusion)).key
+
+
+@pytest.mark.parametrize(
+    "operation,shapes",
+    [
+        ("pointwise", [(127,), (4097,)]),
+        ("softmax", [(3, 127), (17, 1009)]),
+        ("gemm", [(17, 31, 33), (32, 48, 65)]),
+    ],
+)
+def test_dynamic_shapes_reuse_exact_compiled_binary(torch, operation, shapes):
+    from asterion.backend import binary_metadata
+
+    signatures = []
+    keys = []
+    for shape in shapes:
+        program = make_program(operation, shape)
+        kernel = Kernel(program, Schedule(row_tile=1024))
+        inputs = make_inputs(program, 1729)
+        bound = kernel.prepare(*inputs)
+        output = bound.launch()
+        torch.testing.assert_close(output, reference(program, *inputs), rtol=1e-4, atol=5e-5)
+        signatures.append(binary_metadata(bound)["compiled_binary_hashes"])
+        keys.append(kernel.key)
+    assert keys[0] == keys[1]
+    assert signatures[0] == signatures[1]
