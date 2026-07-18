@@ -34,3 +34,35 @@ CASES = [
 ]
 
 
+@pytest.mark.parametrize("op,shape", CASES)
+@pytest.mark.parametrize("choice", [0, 1])
+def test_generated_schedules_against_torch_and_float64(torch, op, shape, choice):
+    p = make_program(op, shape)
+    s = (
+        Schedule()
+        if not choice
+        else Schedule(
+            block=1024,
+            rows=4,
+            tile_m=16,
+            tile_n=32,
+            tile_k=16,
+            unroll=2 if op == "gemm" else 1,
+            fusion=op != "pointwise",
+        )
+    )
+    kernel = Kernel(p, s)
+    xs = make_inputs(p, 1729)
+    out = kernel(*xs)
+    if op == "softmax":
+        expected = torch.softmax(xs[0], dim=1)
+    else:
+        expected = reference(p, *xs)
+    torch.testing.assert_close(out, expected, rtol=1e-4, atol=5e-5)
+    # Independent higher-precision numerical reference, rather than matching one implementation.
+    high = reference(p, *(x.double() for x in xs)).float()
+    torch.testing.assert_close(out, high, rtol=2e-4, atol=5e-5)
+    for _ in range(3):
+        torch.testing.assert_close(kernel(*xs), expected, rtol=1e-4, atol=5e-5)
+
+
