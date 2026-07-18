@@ -66,3 +66,37 @@ def test_generated_schedules_against_torch_and_float64(torch, op, shape, choice)
         torch.testing.assert_close(kernel(*xs), expected, rtol=1e-4, atol=5e-5)
 
 
+def test_extreme_finite_softmax(torch):
+    p = make_program("softmax", (3, 257))
+    x = torch.linspace(-1e4, 1e4, 771, device="cuda").reshape(3, 257)
+    torch.testing.assert_close(
+        Kernel(p, Schedule(rows=4))(x), torch.softmax(x, 1), rtol=1e-4, atol=1e-5
+    )
+
+
+def test_nondefault_stream_and_borrowed_lifetime(torch):
+    p = make_program("pointwise", (4097,))
+    kernel = Kernel(p, Schedule(fusion=False))
+    producer = torch.cuda.current_stream()
+    x = make_inputs(p, 42)[0]
+    stream = torch.cuda.Stream()
+    stream.wait_stream(producer)
+    with torch.cuda.stream(stream):
+        bound = kernel.prepare(x)
+        actual = bound.launch()
+        expected = reference(p, x)
+    producer.wait_stream(stream)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+
+
+def test_runtime_rejects_layout_dtype_and_grad(torch):
+    p = make_program("pointwise", (17,))
+    k = Kernel(p, Schedule())
+    with pytest.raises(ValidationError):
+        k(torch.randn(34, device="cuda")[::2])
+    with pytest.raises(ValidationError):
+        k(torch.randn(17, device="cuda", dtype=torch.float64))
+    with pytest.raises(ValidationError, match="autograd"):
+        k(torch.randn(17, device="cuda", requires_grad=True))
+
+
