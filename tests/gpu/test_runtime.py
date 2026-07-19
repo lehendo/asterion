@@ -78,3 +78,19 @@ def test_prepared_metadata_mutation_is_rejected():
         bound.launch()
 
 
+def test_generic_row_reduction_masks_actual_expression():
+    from asterion.ir import Node, Program
+
+    torch, _ = require_gpu()
+    x = -torch.arange(1, 18, device="cuda", dtype=torch.float32).reshape(1, 17)
+    p = Program("sum", (1, 17), (Node("x", "input"), Node("out", "max", ("x",))), "out")
+    torch.testing.assert_close(Kernel(p, Schedule())(x), x.amax(dim=1))
+    p = Program(
+        "sum",
+        (1, 17),
+        (Node("x", "input"), Node("e", "exp", ("x",)), Node("out", "sum", ("e",))),
+        "out",
+    )
+    torch.testing.assert_close(Kernel(p, Schedule())(x), torch.exp(x).sum(dim=1))
+
+
