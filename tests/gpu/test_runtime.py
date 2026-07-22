@@ -94,3 +94,16 @@ def test_generic_row_reduction_masks_actual_expression():
     torch.testing.assert_close(Kernel(p, Schedule())(x), torch.exp(x).sum(dim=1))
 
 
+@pytest.mark.parametrize("mutation", ["storage", "autograd"])
+def test_prepared_inference_contract_cannot_change(mutation):
+    from asterion.io import ValidationError
+
+    torch, _ = require_gpu()
+    p = make_program("pointwise", (17,))
+    bound = Kernel(p, Schedule()).prepare(*make_inputs(p, 83))
+    if mutation == "storage":
+        bound.inputs[0].set_(torch.empty_like(bound.inputs[0]))
+    else:
+        bound.inputs[0].requires_grad_(True)
+    with pytest.raises(ValidationError, match=mutation):
+        bound.launch()
