@@ -23,3 +23,33 @@ def test_fixed_seed_native_statistical_parity():
             )
 
 
+def test_native_legality_matches_python():
+    core = NativeCore()
+    rng = random.Random(42)
+    for _ in range(1000):
+        op = rng.choice(["pointwise", "sum", "max", "softmax", "gemm"])
+        shape = tuple(
+            rng.randint(1, 40000)
+            for _ in range(1 if op == "pointwise" else 3 if op == "gemm" else 2)
+        )
+        s = Schedule(
+            block=rng.choice([0, 32, 256, 4096, 8192]),
+            warps=rng.choice([1, 2, 3, 4, 8]),
+            rows=rng.choice([1, 4, 8]),
+            fusion=rng.choice([True, False]),
+            row_tile=rng.choice([0, 128, 4096, 16384]),
+        )
+        try:
+            verify_schedule(make_program(op, shape), s)
+            valid = True
+        except ValidationError:
+            valid = False
+        assert core.schedule_is_legal(op, shape, s) == valid
+
+
+@pytest.mark.parametrize(
+    "values,weights,q", [([1.0], [0.0], 0.95), ([float("inf")], [1.0], 0.95), ([1.0], [1.0], 1.0)]
+)
+def test_native_errors(values, weights, q):
+    with pytest.raises(ValidationError):
+        NativeCore().cvar(values, weights, q)
