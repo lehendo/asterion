@@ -97,3 +97,53 @@ def test_mismatched_shapes_rejected():
         compare(a, b)
 
 
+def test_mismatched_targets_rejected():
+    a, b = trace(), trace()
+    b["environment"]["gpu_runtime"] = {"uuid": "other"}
+    with pytest.raises(ValidationError, match="targets"):
+        compare(a, b)
+
+
+def test_multivariant_requires_explicit_selection():
+    t = trace()
+    other = copy.deepcopy(t["records"][0])
+    other["variant"] = "other"
+    t["records"].append(other)
+    with pytest.raises(ValidationError, match="explicitly"):
+        compare(t, t)
+    assert compare(t, t, "baseline", "baseline")["coverage_complete"]
+
+
+def test_cvar_fractional_quantile_mass():
+    assert cvar([1.0, 10.0], [0.9, 0.1], 0.95) == pytest.approx(10.0)
+    assert cvar([1.0, 10.0], [0.9, 0.1], 0.8) == pytest.approx(5.5)
+    assert cvar([1.0, 10.0], [0.9, 0.1], 0) == pytest.approx(1.9)
+
+
+def test_sample_dispersion():
+    s = summary([1, 1, 1, 1, 100])
+    assert s["median_us"] == 1 and s["p95_us"] == 100
+    assert s["small_sample"]
+
+
+@given(
+    st.lists(st.floats(min_value=0.001, max_value=1e4, allow_nan=False), min_size=1, max_size=40)
+)
+def test_quantile_monotonic(values):
+    qs = [weighted_quantile(values, [1] * len(values), q) for q in [0, 0.25, 0.5, 0.95, 1]]
+    assert qs == sorted(qs) and qs[0] == min(values) and qs[-1] == max(values)
+
+
+def test_workload_roundtrip():
+    s = WorkloadSpec.from_dict(spec())
+    assert WorkloadSpec.from_dict(s.to_dict()) == s
+    assert analyze(spec())["measurement_kind"] == "unavailable"
+
+
+def test_split_leakage_rejected():
+    s = spec()
+    s["cases"][1]["shape"] = s["cases"][0]["shape"]
+    with pytest.raises(ValidationError, match="leak"):
+        WorkloadSpec.from_dict(s)
+
+
