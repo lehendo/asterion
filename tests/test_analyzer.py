@@ -147,3 +147,44 @@ def test_split_leakage_rejected():
         WorkloadSpec.from_dict(s)
 
 
+@pytest.mark.parametrize("field,value", [("typo", 1), ("dtype", "float16"), ("seed", -1)])
+def test_invalid_workload(field, value):
+    s = spec()
+    s[field] = value
+    with pytest.raises(ValidationError):
+        WorkloadSpec.from_dict(s)
+
+
+def test_invalid_boolean_dimension():
+    s = spec()
+    s["cases"][0]["shape"] = [True, 128]
+    with pytest.raises(ValidationError):
+        WorkloadSpec.from_dict(s)
+
+
+def test_duplicate_record_rejected():
+    t = trace()
+    t["records"].append(t["records"][0])
+    with pytest.raises(ValidationError, match="duplicate"):
+        validate_trace(t)
+
+
+def test_correctness_gate():
+    t = trace()
+    t["records"][0]["correctness"] = "unknown"
+    with pytest.raises(ValidationError, match="correctness"):
+        validate_trace(t)
+
+
+def test_report_escapes_untrusted_strings_and_saves_data(tmp_path):
+    data = compare(trace(), trace("candidate"))
+    data["rows"][0]["case_id"] = '<script>alert("x")</script>'
+    path = write_report(data, tmp_path)
+    content = path.read_text()
+    assert "<script>" not in content
+    assert "&lt;script&gt;" in content
+    assert "SIMULATED_FIXTURE" in content
+    assert json.loads((tmp_path / "results.json").read_text()) == data
+    assert (tmp_path / "cases.csv").exists()
+
+
