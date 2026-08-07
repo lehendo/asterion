@@ -188,3 +188,56 @@ def test_report_escapes_untrusted_strings_and_saves_data(tmp_path):
     assert (tmp_path / "cases.csv").exists()
 
 
+def test_cli_analyze_compare_and_bad_input(tmp_path, capsys):
+    path = tmp_path / "trace.json"
+    atomic_json(path, trace())
+    assert main(["analyze", str(path), "--output", str(tmp_path / "a")]) == 0
+    assert main(["compare", str(path), str(path), "--output", str(tmp_path / "b")]) == 0
+    assert main(["doctor"]) == 0
+    assert main(["analyze", str(tmp_path / "missing"), "--output", str(tmp_path / "bad")]) == 2
+
+
+def test_hash_is_canonical_and_atomic_json_rejects_nan(tmp_path):
+    assert digest({"a": 1, "b": 2}) == digest({"b": 2, "a": 1})
+    p = tmp_path / "value.json"
+    atomic_json(p, {"valid": 1})
+    with pytest.raises(ValueError):
+        atomic_json(p, {"invalid": float("nan")})
+    assert json.loads(p.read_text()) == {"valid": 1}
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), {"not_json"}])
+def test_noncanonical_values_produce_public_validation_errors(value):
+    with pytest.raises(ValidationError):
+        digest({"bad": value})
+
+
+def test_cli_bad_yaml_produces_clear_error(tmp_path, capsys):
+    path = tmp_path / "broken.yaml"
+    path.write_text("cases: [")
+    assert main(["analyze", str(path), "--output", str(tmp_path / "out")]) == 2
+    assert "invalid YAML" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "field,value", [("operation", []), ("split", {}), ("status", []), ("measurement_kind", [])]
+)
+def test_trace_enum_types_reject_unhashable_json_values(field, value):
+    data = trace()
+    if field == "measurement_kind":
+        data[field] = value
+    else:
+        data["records"][0][field] = value
+    with pytest.raises(ValidationError):
+        validate_trace(data)
+
+
+@pytest.mark.parametrize("field", ["operation", "split"])
+def test_workload_enum_types_reject_unhashable_json_values(field):
+    data = spec()
+    if field == "operation":
+        data[field] = []
+    else:
+        data["cases"][0][field] = []
+    with pytest.raises(ValidationError):
+        WorkloadSpec.from_dict(data)
