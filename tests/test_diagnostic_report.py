@@ -35,3 +35,27 @@ def fixture():
     }
 
 
+def test_report_escapes_untrusted_strings_and_has_no_active_code(tmp_path):
+    result = fixture()
+    path = write_diagnosis(result, tmp_path)
+    text = path.read_text()
+    assert "SIMULATED_FIXTURE" in text
+    assert "<script>" not in text
+    assert "<img src=x" not in text
+    assert "&lt;img" in text
+    assert "default-src 'none'" in text
+    assert "<svg" in text
+    assert "file://" not in text
+
+
+def test_corrupt_or_malformed_saved_results_fail_actionably(tmp_path):
+    result = fixture()
+    result["result_id"] = digest(result)
+    bad = copy.deepcopy(result)
+    bad["scope"] = "modified"
+    with pytest.raises(ValidationError, match="integrity"):
+        write_diagnosis(bad, tmp_path)
+    with pytest.raises(ValidationError, match="malformed"):
+        write_diagnosis({"artifact_type": "diagnosis"}, tmp_path)
+
+
