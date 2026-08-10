@@ -59,3 +59,26 @@ def test_corrupt_or_malformed_saved_results_fail_actionably(tmp_path):
         write_diagnosis({"artifact_type": "diagnosis"}, tmp_path)
 
 
+def test_cpu_cli_export_does_not_require_gpu(tmp_path):
+    schedule = Schedule().to_dict()
+    spec = {
+        "schema_version": 1,
+        "artifact_type": "regression_spec",
+        "program": make_program("pointwise", (19,)).to_dict(),
+        "baseline": schedule,
+        "candidate": {**schedule, "fusion": False},
+    }
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec))
+    assert (
+        main(["reproduce", str(path), "--export-only", "--output", str(tmp_path / "export")]) == 0
+    )
+    assert (tmp_path / "export/reproduce.py").exists()
+
+
+def test_explain_preserves_existing_html_filename_contract(tmp_path):
+    source = tmp_path / "saved.json"
+    source.write_text(json.dumps(fixture()))
+    target = tmp_path / "view/report.html"
+    assert main(["explain", str(source), "--output", str(target)]) == 0
+    assert target.is_file()
