@@ -98,3 +98,95 @@ def test_passive_validation_and_export_do_not_execute(case, tmp_path):
     assert (result.parent / "_support/external_runtime.py").exists()
 
 
+def test_cli_passive_external_validation(case, capsys):
+    from asterion.cli import main
+
+    _, path = case
+    assert main(["validate", str(path)]) == 0
+    assert "passive validation only" in capsys.readouterr().out
+    assert not path.with_name("kernel.executed").exists()
+
+
+def test_existing_leading_underscore_entrypoints_need_no_source_rename(case):
+    s, _ = case
+    s["baseline"]["entrypoint"] = "_existing_kernel"
+    s["candidate"]["entrypoint"] = "_existing_kernel"
+    s["reference"]["entrypoint"] = "_reference"
+    assert specification(s)["baseline"]["entrypoint"] == "_existing_kernel"
+
+
+def test_trust_is_not_authorized_by_imported_artifact(case, tmp_path):
+    s, path = case
+    with pytest.raises(ValidationError, match="trusted_code"):
+        diagnose(path, output=tmp_path / "out")
+    s["trusted_code"] = True
+    with pytest.raises(ValidationError, match="unknown fields"):
+        specification(s)
+    assert not path.with_name("kernel.executed").exists()
+
+
+def test_standalone_rejects_tampering_before_import(case, tmp_path):
+    import subprocess
+
+    _, path = case
+    script = export_reproducer(path, output=tmp_path / "export")
+    support = script.parent / "_support/external_runtime.py"
+    marker = tmp_path / "support-executed"
+    support.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+    completed = subprocess.run(
+        [sys.executable, str(script), "--trusted-code", "--output", str(tmp_path / "replay")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0 and "integrity mismatch" in completed.stderr
+    assert not marker.exists() and not path.with_name("kernel.executed").exists()
+
+
+def test_trusted_loader_executes_reviewed_bytes_despite_stale_pyc_and_linecache(tmp_path):
+    import inspect
+    import linecache
+    import os
+    import py_compile
+
+    from asterion.external_runtime import _load_reviewed_module
+
+    path = tmp_path / "reviewed.py"
+    old = "def answer():\n    return 'old'\n"
+    new = old.replace("old", "new")
+    path.write_text(old)
+    stamp = path.stat()
+    py_compile.compile(str(path), doraise=True)
+    linecache.getlines(str(path))
+    path.write_text(new)
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    module = _load_reviewed_module(path, hashlib.sha256(new.encode()).hexdigest())
+    assert module.answer() == "new" and "'new'" in inspect.getsource(module.answer)
+    with pytest.raises(ValidationError, match="changed before execution"):
+        _load_reviewed_module(path, hashlib.sha256(old.encode()).hexdigest())
+
+
+@pytest.mark.parametrize("failure", ["startup", "timeout"])
+def test_failed_worker_retains_exact_input_snapshot(case, tmp_path, monkeypatch, failure):
+    import subprocess
+
+    from asterion.external_workflow import diagnose_external
+
+    _, path = case
+    original = path.with_name("kernel.py").read_bytes()
+
+    def failed(args, **kwargs):
+        path.with_name("kernel.py").write_text("changed concurrently")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(args, 1, output="simulated", stderr="timeout")
+        return subprocess.CompletedProcess(args, 1, "simulated", "startup failure")
+
+    monkeypatch.setattr("asterion.external_workflow.run_worker", failed)
+    root = tmp_path / "failed"
+    with pytest.raises(ValidationError):
+        diagnose_external(path, root, trusted_code=True)
+    assert (root / "source/kernel.py").read_bytes() == original
+    assert (root / "source/case.json").exists() and (root / "worker-failure.json").exists()
+    assert not path.with_name("kernel.executed").exists()
+
+
