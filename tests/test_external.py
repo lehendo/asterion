@@ -190,3 +190,90 @@ def test_failed_worker_retains_exact_input_snapshot(case, tmp_path, monkeypatch,
     assert not path.with_name("kernel.executed").exists()
 
 
+def test_source_hash_and_symlink_containment(case, tmp_path):
+    s, path = case
+    checked = specification(s)
+    path.with_name("kernel.py").write_text("modified")
+    with pytest.raises(ValidationError, match="hash mismatch"):
+        source_path(checked, tmp_path)
+    outside = tmp_path.parent / (tmp_path.name + "-outside.py")
+    outside.write_text("pass")
+    link = tmp_path / "escape.py"
+    link.symlink_to(outside)
+    checked["module"] = "escape.py"
+    with pytest.raises(ValidationError, match="escapes"):
+        source_path(checked, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda s: s.update(module="../kernel.py"),
+        lambda s: s.update(module="/tmp/kernel.py"),
+        lambda s: s.update(module="reproduce.py"),
+        lambda s: s.update(module="_support/kernel.py"),
+        lambda s: s.update(module="worker-home/kernel.py"),
+        lambda s: s["tensors"]["z"].update(dtype="float64"),
+        lambda s: s["candidate"]["parameters"].update(BLOCK=512),
+        lambda s: s["parameters"]["num_warps"].update(values=[3]),
+        lambda s: s.update(grid=["lambda: run()"]),
+        lambda s: s.update(dimensions={"N": 2**31}),
+        lambda s: s.update(
+            constraints=[{"left": {"dim": "N"}, "relation": "multiple_of", "right": 32}]
+        ),
+        lambda s: s["arguments"].update(BLOCK=32),
+        lambda s: s.update(numerical={"kind": "allclose", "rtol": 0.01, "atol": 0}),
+    ],
+)
+def test_invalid_contracts_are_rejected(case, mutation):
+    s, _ = case
+    broken = copy.deepcopy(s)
+    mutation(broken)
+    with pytest.raises(ValidationError):
+        specification(broken)
+
+
+def test_expression_is_bounded_arithmetic_not_python():
+    assert expression({"ceildiv": [{"dim": "N"}, {"param": "B"}]}, {"N": 1031}, {"B": 256}) == 5
+    assert expression({"pow2": {"dim": "N"}}, {"N": 1031}, {}) == 2048
+    for x in ({"eval": "__import__('os')"}, {"ceildiv": [1, 0]}, "N + 1"):
+        with pytest.raises(ValidationError):
+            expression(x, {}, {})
+
+
+def test_typed_constexpr_changes_are_not_pruned_as_equal(case):
+    s, _ = case
+    s["parameters"]["FLAG"] = {"kind": "constexpr", "values": [True, 1]}
+    s["baseline"]["parameters"]["FLAG"] = True
+    s["candidate"]["parameters"]["FLAG"] = 1
+    plans = interventions(specification(s))
+    assert any(p["parameter"] == "FLAG" for p in plans)
+
+
+def test_signed_zero_constexpr_identity_is_preserved(case):
+    s, _ = case
+    s["parameters"]["FLAG"] = {"kind": "constexpr", "values": [-0.0]}
+    s["baseline"]["parameters"]["FLAG"] = -0.0
+    s["candidate"]["parameters"]["FLAG"] = 0.0
+    with pytest.raises(ValidationError, match="outside its declared domain"):
+        specification(s)
+    s["parameters"]["FLAG"]["values"].append(0.0)
+    assert any(p["parameter"] == "FLAG" for p in interventions(specification(s)))
+
+
+def test_saved_source_root_cannot_escape_artifact(case, tmp_path):
+    from asterion.external_workflow import load_case
+    from asterion.io import digest
+
+    s, path = case
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "source").symlink_to(path.parent, target_is_directory=True)
+    saved = {"artifact_type": "external_diagnosis", "specification": specification(s)}
+    saved["result_id"] = digest(saved)
+    target = artifact / "results.json"
+    target.write_text(json.dumps(saved))
+    with pytest.raises(ValidationError, match="escapes diagnosis"):
+        load_case(target)
+
+
