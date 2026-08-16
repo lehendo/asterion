@@ -277,3 +277,115 @@ def test_saved_source_root_cannot_escape_artifact(case, tmp_path):
         load_case(target)
 
 
+def test_worker_environment_drops_credentials(monkeypatch, tmp_path):
+    for name in (
+        "AWS_SECRET_ACCESS_KEY",
+        "SSH_AUTH_SOCK",
+        "GITHUB_TOKEN",
+        "PRIVATE_SERVICE_TOKEN",
+        "SLURM_JWT",
+    ):
+        monkeypatch.setenv(name, "sensitive")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    e = worker_environment(tmp_path)
+    assert e["HOME"] == str(tmp_path) and e["CUDA_VISIBLE_DEVICES"] == "2"
+    assert e["SLURM_JOB_ID"] == "123" and e["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert not any(
+        k in e
+        for k in (
+            "AWS_SECRET_ACCESS_KEY",
+            "SSH_AUTH_SOCK",
+            "GITHUB_TOKEN",
+            "PRIVATE_SERVICE_TOKEN",
+            "SLURM_JWT",
+        )
+    )
+
+
+def test_worker_timeout_owns_background_children(tmp_path):
+    import os
+    import subprocess
+    import time
+
+    marker = tmp_path / "background-finished"
+    child = (
+        "import time; from pathlib import Path; time.sleep(2); Path("
+        + repr(str(marker))
+        + ").touch()"
+    )
+    command = (
+        "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',"
+        + repr(child)
+        + "],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); print('ready',flush=True); time.sleep(30)"
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as exc:
+        run_worker([sys.executable, "-c", command], env=dict(os.environ), timeout=1)
+    assert "ready" in exc.value.stdout
+    time.sleep(2.1)
+    assert not marker.exists()
+
+
+def test_numerical_contracts_require_explicit_policy():
+    assert (
+        numerical_policy(
+            {"kind": "allclose", "rtol": 0, "atol": 0, "justification": "strict application"}
+        )["atol"]
+        == 0
+    )
+    assert forward_gamma(64) > forward_gamma(32) > 0
+    for p in (
+        {"kind": "matmul_forward_bound", "justification": "model", "accumulation_bits": 11},
+        {"kind": "exact", "justification": "numeric", "rtol": 1},
+    ):
+        with pytest.raises(ValidationError):
+            numerical_policy(p)
+
+
+def test_reduction_preserves_regression_and_rejects_lost_effect(case, tmp_path):
+    from asterion.external_reduction import reduce_external
+
+    s, path = case
+    calls = []
+
+    def simulated(spec, output, **kwargs):
+        calls.append(copy.deepcopy(spec))
+        positive = spec["dimensions"]["N"] >= 64
+        return {
+            "status": "REGRESSION_ESTABLISHED" if positive else "REGRESSION_INCONCLUSIVE",
+            "environment": {"fixture": "simulated CPU state test, no GPU measurements"},
+            "recommendations": ["undo_BLOCK"] if positive else [],
+            "variants": {},
+            "comparison": {"fixture": True},
+        }
+
+    result = reduce_external(
+        s, tmp_path / "reduction", trusted_code=True, source_root=path.parent, runner=simulated
+    )
+    assert result["status"] == "CONFIRMED_SMALLER_REPRODUCER"
+    assert result["reduced_specification"]["dimensions"]["N"] == 64
+    assert result["storage_ratio"] == 64 / 1031
+    assert not result["trials"][-1]["accepted"]
+    assert calls[-1]["measurement"]["seed"] != calls[0]["measurement"]["seed"]
+    assert result["properties"]["HARDWARE_MECHANISM_SUPPORTED"] == "UNAVAILABLE"
+    assert not path.with_name("kernel.executed").exists()
+    manifest = json.loads((tmp_path / "reduction/witness/manifest.json").read_text())
+    assert {"reduction.json", "expectation.json"} <= set(manifest["files"])
+
+
+def test_numeric_rejection_never_becomes_confirmed_reduction(case, tmp_path):
+    from asterion.external_reduction import reduce_external
+
+    s, path = case
+
+    def simulated(spec, output, **kwargs):
+        return {"status": "NUMERICAL_FAILURE"}
+
+    result = reduce_external(
+        s, tmp_path / "rejected", trusted_code=True, source_root=path.parent, runner=simulated
+    )
+    assert result["status"] == "NO_CONFIRMED_WITNESS" and not result["trials"]
+    assert not (tmp_path / "rejected/witness").exists()
+
+
