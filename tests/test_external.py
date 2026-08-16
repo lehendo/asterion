@@ -389,3 +389,92 @@ def test_numeric_rejection_never_becomes_confirmed_reduction(case, tmp_path):
     assert not (tmp_path / "rejected/witness").exists()
 
 
+def test_external_confirmation_execution_failure_is_retained(case, tmp_path):
+    from asterion.external_reduction import reduce_external
+
+    s, path = case
+
+    def simulated(spec, output, **kwargs):
+        assert 1 <= kwargs["timeout_seconds"] <= 900
+        if output.name == "confirmation":
+            raise ValidationError("simulated compiler-worker timeout")
+        return {
+            "status": "REGRESSION_ESTABLISHED",
+            "environment": {"fixture": True},
+            "recommendations": [],
+            "variants": {},
+        }
+
+    result = reduce_external(
+        s,
+        tmp_path / "timeout",
+        trusted_code=True,
+        source_root=path.parent,
+        runner=simulated,
+        max_trials=1,
+    )
+    assert result["status"] == "CONFIRMATION_FAILED" and "timeout" in result["reason"]
+    assert (tmp_path / "timeout/report.html").exists()
+    assert not (tmp_path / "timeout/witness").exists()
+
+
+def test_external_report_escapes_imported_strings(case, tmp_path):
+    from asterion.external_report import write_external_report
+    from asterion.io import digest
+
+    s, _ = case
+    data = {
+        "artifact_type": "external_diagnosis",
+        "status": "REGRESSION_INCONCLUSIVE",
+        "specification": specification(s),
+        "numerical_status": "ACCEPTED_TESTED_DOMAIN",
+        "recommendations": [],
+        "environment": {"name": "<script>alert(1)</script>"},
+        "source_identity": {},
+        "measurement_protocol": {},
+        "findings": [],
+        "variants": {},
+        "hardware_mechanism": "UNAVAILABLE",
+    }
+    data["result_id"] = digest(data)
+    page = write_external_report(data, tmp_path / "report").read_text()
+    assert "<script>" not in page and "&lt;script&gt;" in page
+
+
+def test_report_rejects_recursive_or_deep_untrusted_structure_before_render(tmp_path):
+    from asterion.external_report import write_external_report
+
+    recursive = {"artifact_type": "external_diagnosis"}
+    recursive["payload"] = recursive
+    with pytest.raises(ValidationError, match="nesting/node"):
+        write_external_report(recursive, tmp_path / "recursive")
+    assert not (tmp_path / "recursive").exists()
+
+
+def test_static_ptx_evidence_does_not_count_comments_or_claim_dynamic_work():
+    from asterion.external_runtime import static_ptx_observations
+
+    text = """// ldmatrix.sync.aligned.x4.shared.b16 ignored;
+    /* mma.sync.aligned.f32 comment; */
+    @%p1 ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%r1}, [%rd1];
+    wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 {%f1}, %rd1, %rd2;
+    """
+    value = static_ptx_observations(text)
+    assert value["static_opcode_prefix_counts"]["ldmatrix"] == 1
+    assert value["static_opcode_prefix_counts"]["mma.sync"] == 0
+    assert value["static_opcode_prefix_counts"]["wgmma.mma_async"] == 1
+    assert (
+        value["category"] == "COMPILER_EVIDENCE"
+        and "not dynamic" in value["interpretation"].lower()
+    )
+
+
+def test_fixed_input_generator_and_public_bad_data(case, tmp_path):
+    s, _ = case
+    s["tensors"]["y"]["generator"] = "ones"
+    assert specification(s)["tensors"]["y"]["generator"] == "ones"
+    s["tensors"]["z"]["generator"] = "ones"
+    with pytest.raises(ValidationError, match="only inputs"):
+        specification(s)
+    with pytest.raises(ValidationError, match="object"):
+        diagnose([], output=tmp_path / "invalid")
