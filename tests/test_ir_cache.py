@@ -41,3 +41,34 @@ def test_ir_roundtrip_and_codegen(op, shape):
         assert "triton.autotune" not in source
 
 
+def test_canonicalization_eliminates_pure_dead_and_common_expressions():
+    p = Program(
+        "pointwise",
+        (128,),
+        (
+            Node("x", "input"),
+            Node("a", "const", value=1.0),
+            Node("b", "const", value=1.0),
+            Node("dead", "mul", ("x", "a")),
+            Node("y", "add", ("x", "b")),
+        ),
+        "y",
+    )
+    q = canonicalize(p)
+    assert [n.name for n in q.nodes] == ["x", "b", "y"]
+    assert q.nodes[-1].args == ("x", "b")
+
+
+@pytest.mark.parametrize("name", ["x;print(1)", "tl", "for", "rr"])
+def test_illegal_identifier_rejected(name):
+    p = make_program("sum", (2, 3))
+    with pytest.raises(ValidationError):
+        verify(replace(p, nodes=(Node(name, "input"), p.nodes[1])))
+
+
+def test_use_before_definition_rejected():
+    p = make_program("sum", (2, 3))
+    with pytest.raises(ValidationError, match="before"):
+        verify(replace(p, nodes=tuple(reversed(p.nodes))))
+
+
