@@ -105,3 +105,36 @@ def test_row_resource_bound():
         verify_schedule(make_program("softmax", (2, 32769)), Schedule())
 
 
+@given(st.integers(min_value=1, max_value=10000))
+def test_pointwise_remainder_mask_is_emitted(n):
+    p = make_program("pointwise", (n,))
+    assert "idx < N" in generate(p, Schedule())
+
+
+def test_cache_roundtrip_corruption_and_invalid_path(tmp_path):
+    c = Cache(tmp_path)
+    key = digest({"x": 1})
+    assert c.get(key) is None
+    c.put(key, {"source": "safe"})
+    assert c.get(key) == {"source": "safe"}
+    (tmp_path / (key + ".json")).write_text('{"corrupt":true}')
+    with pytest.raises(ValidationError, match="corrupt"):
+        c.get(key)
+    with pytest.raises(ValidationError):
+        c.get("../secret")
+
+
+def test_cache_atomic_concurrent_writers(tmp_path):
+    c = Cache(tmp_path)
+    key = digest({"entry": 1})
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(lambda i: c.put(key, {"value": i}), range(20)))
+    assert c.get(key)["value"] in range(20)
+    assert c.stats()["entries"] == 1
+
+
+def test_duplicate_operand_unfused_codegen_parses():
+    p = Program("pointwise", (7,), (Node("x", "input"), Node("out", "mul", ("x", "x"))), "out")
+    ast.parse(generate(p, Schedule(fusion=False)))
+
+
