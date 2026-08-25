@@ -72,3 +72,36 @@ def test_use_before_definition_rejected():
         verify(replace(p, nodes=tuple(reversed(p.nodes))))
 
 
+def test_tiling_changes_executable_indexing_and_audit():
+    p = make_program("pointwise", (1025,))
+    s, log = transform(p, Schedule(), block=1024, fusion=False)
+    assert log["changes"] == {"block": 1024, "fusion": False}
+    assert "stage_scaled" in generate(p, s)
+    assert "tl.program_id(0)*1024" in generate(p, s)
+    assert generate(p, s) != generate(p, Schedule())
+
+
+def test_row_group_and_gemm_loop_rewrites():
+    p = make_program("softmax", (17, 129))
+    s, _ = transform(p, Schedule(), rows=4)
+    assert "tl.arange(0, 4)" in generate(p, s)
+    g = make_program("gemm", (17, 31, 33))
+    gs, _ = transform(g, Schedule(), tile_m=16, unroll=2)
+    assert "tl.static_range(0, 2)" in generate(g, gs)
+    assert 'input_precision="ieee"' in generate(g, gs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"warps": 3}, {"block": 0}, {"rows": 16}, {"unroll": 8}, {"fusion": "yes"}, {"block": True}],
+)
+def test_illegal_schedule_rejected(kwargs):
+    with pytest.raises(ValidationError):
+        verify_schedule(make_program("pointwise", (17,)), Schedule(**kwargs))
+
+
+def test_row_resource_bound():
+    with pytest.raises(ValidationError):
+        verify_schedule(make_program("softmax", (2, 32769)), Schedule())
+
+
