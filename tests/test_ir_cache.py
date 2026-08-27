@@ -138,3 +138,42 @@ def test_duplicate_operand_unfused_codegen_parses():
     ast.parse(generate(p, Schedule(fusion=False)))
 
 
+def test_live_common_subexpressions_merge():
+    p = Program(
+        "pointwise",
+        (17,),
+        (
+            Node("x", "input"),
+            Node("a", "const", value=1.0),
+            Node("b", "const", value=1.0),
+            Node("y", "add", ("x", "a")),
+            Node("z", "add", ("x", "b")),
+            Node("out", "add", ("y", "z")),
+        ),
+        "out",
+    )
+    q = canonicalize(p)
+    assert [n.name for n in q.nodes] == ["x", "a", "y", "out"]
+    assert q.nodes[-1].args == ("y", "y")
+
+
+def test_fixed_schedule_source_reuses_runtime_dimensions():
+    for operation, a, b in (
+        ("pointwise", (127,), (2049,)),
+        ("softmax", (17, 127), (33, 4093)),
+        ("gemm", (17, 31, 33), (65, 63, 129)),
+    ):
+        schedule = Schedule(row_tile=4096)
+        assert generate(make_program(operation, a), schedule) == generate(
+            make_program(operation, b), schedule
+        )
+    with pytest.raises(ValidationError, match="exceeds fixed"):
+        verify_schedule(make_program("softmax", (3, 129)), Schedule(row_tile=128))
+
+
+@pytest.mark.parametrize("field,value", [("op", []), ("args", [[]])])
+def test_ir_unhashable_node_fields_are_validation_errors(field, value):
+    data = make_program("pointwise", (17,)).to_dict()
+    data["nodes"][-1][field] = value
+    with pytest.raises(ValidationError):
+        Program.from_dict(data)
