@@ -78,3 +78,28 @@ def test_forward_policy_rejects_large_residual_and_unbounded_model():
         forward_gamma(2**22)
 
 
+def test_forward_v2_includes_final_rounding_of_accumulation_error():
+    torch = pytest.importorskip("torch")
+    policy = {
+        "kind": "matmul_forward_bound",
+        "model_version": 2,
+        "accumulation_bits": 24,
+        "justification": "Synthetic algebraic rounding-bound fixture, not a GPU correctness claim",
+    }
+    gamma, ref_gamma = forward_gamma(64), forward_gamma(64, 53)
+    # A value .9998 within the accumulation envelope can round to FP16 1.
+    # With a zero exact reference the final rounding still magnifies that error.
+    scale = 0.9998 * (1 - ref_gamma) / (gamma + ref_gamma)
+    reference = {
+        "value": torch.tensor([0.0], dtype=torch.float64),
+        "absolute_product_sum": torch.tensor([scale], dtype=torch.float64),
+        "accumulation_length": 64,
+    }
+    result = check_output(torch.tensor([1.0], dtype=torch.float16), reference, policy)
+    assert result["passed"] and result["forward_model"]["reference_gamma_2k"] > 0
+    reference["value"] = reference["value"].float()
+    with pytest.raises(ValidationError, match="FP64"):
+        check_output(torch.tensor([1.0], dtype=torch.float16), reference, policy)
+    policy.pop("model_version")
+    with pytest.raises(ValidationError, match="explicit model_version"):
+        check_output(torch.tensor([1.0], dtype=torch.float16), reference, policy)
