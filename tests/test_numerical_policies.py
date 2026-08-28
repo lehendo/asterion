@@ -49,3 +49,32 @@ def test_exact_allclose_and_model_have_different_meanings():
     assert model["passed"] and "assumptions" in model["forward_model"]
 
 
+def test_numerical_invalid_is_not_a_timing_negative():
+    torch = pytest.importorskip("torch")
+    value = check_output(
+        torch.tensor([float("nan")]),
+        torch.tensor([0.0]),
+        {"kind": "exact", "justification": "must be finite exact zero"},
+    )
+    assert not value["passed"] and value["status"] == "NONFINITE_RESULT"
+
+
+def test_forward_policy_rejects_large_residual_and_unbounded_model():
+    torch = pytest.importorskip("torch")
+    policy = {
+        "kind": "matmul_forward_bound",
+        "model_version": 2,
+        "accumulation_bits": 24,
+        "justification": "bounded normal arithmetic fixture",
+    }
+    expected = {
+        "value": torch.tensor([1.0], dtype=torch.float64),
+        "absolute_product_sum": torch.tensor([1.0], dtype=torch.float64),
+        "accumulation_length": 64,
+    }
+    result = check_output(torch.tensor([1.01]), expected, policy)
+    assert not result["passed"] and result["max_model_normalized_error"] > 1
+    with pytest.raises(ValidationError, match="bounded forward"):
+        forward_gamma(2**22)
+
+
