@@ -60,3 +60,32 @@ def test_deterministic_decisions():
     assert fit_portfolio(matrix()) == fit_portfolio(matrix())
 
 
+def test_equal_feature_cannot_be_split_by_oracle():
+    t = matrix()
+    for r in t["records"]:
+        r["shape"][1] = 127
+    p = fit_portfolio(t, max_variants=2)
+    assert len(p["dispatcher"]["rules"]) == 1
+
+
+def test_incorrect_incomplete_schedule_excluded():
+    t = matrix()
+    t["records"][0].update(status="error", error="incorrect", correctness="failed")
+    assert select(fit_portfolio(t), [17, 127])[0] == "b"
+
+
+def test_code_budget_and_sample_validity():
+    with pytest.raises(ValidationError, match="code budget"):
+        fit_portfolio(matrix(), max_code_bytes=10)
+    t = matrix()
+    for r in t["records"]:
+        r.pop("generated_code_bytes")
+    with pytest.raises(ValidationError, match="code_bytes"):
+        fit_portfolio(t)
+
+
+def test_single_variant_budget():
+    p = fit_portfolio(matrix(), max_variants=1)
+    assert len(p["variants"]) == 1
+
+
