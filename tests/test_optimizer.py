@@ -39,3 +39,24 @@ def matrix():
     }
 
 
+def test_portfolio_constraints_and_metadata_dispatch():
+    p = fit_portfolio(matrix(), max_variants=2)
+    assert len(p["variants"]) <= 2
+    assert p["generated_code_bytes"] <= p["max_code_bytes"]
+    assert select(p, [17, 127])[0] == "a"
+    assert select(p, [17, 4093])[0] == "b"
+    assert select(p, [17, 8191]) == (None, "outside_training_feature_range")
+    assert validate_portfolio(p)["status"] == "validated_metadata"
+
+
+def test_no_test_leakage():
+    t = matrix()
+    t["records"][0]["split"] = "test"
+    with pytest.raises(ValidationError, match="held-out"):
+        fit_portfolio(t)
+
+
+def test_deterministic_decisions():
+    assert fit_portfolio(matrix()) == fit_portfolio(matrix())
+
+
