@@ -89,3 +89,33 @@ def test_single_variant_budget():
     assert len(p["variants"]) == 1
 
 
+def test_portfolio_corruption_rejected():
+    p = fit_portfolio(matrix())
+    p["variants"]["a"]["warps"] = 3
+    with pytest.raises(ValidationError, match="integrity"):
+        validate_portfolio(p)
+
+
+def test_nonmonotone_dispatch_rules_rejected_even_with_valid_checksum():
+    p = fit_portfolio(matrix())
+    p["dispatcher"]["rules"] = list(reversed(p["dispatcher"]["rules"]))
+    p.pop("integrity_hash")
+    p["integrity_hash"] = digest(p)
+    with pytest.raises(ValidationError):
+        validate_portfolio(p)
+
+
+def test_risk_term_is_separate_from_mean():
+    assert objective([1.0, 4.0], [0.9, 0.1], risk=1) > objective([1.0, 4.0], [0.9, 0.1], risk=0)
+
+
+def test_malformed_portfolio_is_actionable():
+    for value in (None, [], {"schema_version": 1, "artifact_type": "portfolio"}):
+        with pytest.raises(ValidationError):
+            validate_portfolio(value)
+
+
+def test_fixture_evidence_label_survives_selection():
+    assert fit_portfolio(matrix())["measurement_kind"] == "simulated_fixture"
+
+
