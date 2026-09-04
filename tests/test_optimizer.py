@@ -119,3 +119,39 @@ def test_fixture_evidence_label_survives_selection():
     assert fit_portfolio(matrix())["measurement_kind"] == "simulated_fixture"
 
 
+def test_region_limited_candidate_can_be_selected_only_where_measured():
+    t = matrix()
+    # Small-only candidate a must never be assigned to the unmeasured large shapes.
+    for r in t["records"]:
+        if r["variant"] == "a" and r["case_id"] != "127":
+            r.update(status="unsupported", error="fixed tile too small", correctness="unavailable")
+    p = fit_portfolio(t, max_variants=2)
+    assert select(p, [17, 127])[0] == "a"
+    assert select(p, [17, 4093])[0] == "b"
+    validate_portfolio(p)
+
+
+def test_disjoint_schedule_coverage_does_not_require_a_global_seed():
+    t = matrix()
+    for r in t["records"]:
+        if (r["variant"] == "a" and r["case_id"] != "127") or (
+            r["variant"] == "b" and r["case_id"] == "127"
+        ):
+            r.update(status="unsupported", error="outside schedule tile", correctness="unavailable")
+    p = fit_portfolio(t, max_variants=2)
+    assert select(p, [17, 127])[0] == "a"
+    assert select(p, [17, 4093])[0] == "b"
+    validate_portfolio(p)
+
+
+def test_interpolation_boundaries_respect_fixed_tile_domain():
+    t = matrix()
+    for r in t["records"]:
+        r["schedule"]["row_tile"] = 128 if r["variant"] == "a" else 4096
+        if r["variant"] == "a" and r["shape"][-1] > 128:
+            r.update(status="unsupported", error="fixed tile too small", correctness="unavailable")
+    p = fit_portfolio(t, max_variants=2)
+    assert select(p, [17, 509])[0] == "b"
+    for columns in (127, 128, 129, 509, 769, 1024, 2049, 4093):
+        variant, _ = select(p, [17, columns])
+        assert p["variants"][variant]["row_tile"] >= columns
