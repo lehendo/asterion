@@ -47,3 +47,24 @@ def test_native_driver_rejects_unvalidated_modern_compiler_abi(monkeypatch):
         DriverModule(None, kernel)
 
 
+def test_unsupported_device_gets_an_error_before_compilation(monkeypatch):
+    from asterion import backend
+
+    fake = SimpleNamespace(
+        __version__="fixture",
+        version=SimpleNamespace(cuda="fixture"),
+        cuda=SimpleNamespace(
+            current_device=lambda: 0,
+            get_device_capability=lambda: (7, 5),
+            get_device_properties=lambda device: SimpleNamespace(
+                name="fixture", total_memory=1, uuid="fixture"
+            ),
+        ),
+    )
+    monkeypatch.setattr(backend, "_TARGET_CACHE", {})
+    monkeypatch.setattr(backend, "command", lambda args: None)
+    monkeypatch.setattr(
+        backend, "require_gpu", lambda: (fake, SimpleNamespace(__version__="3.8.0"))
+    )
+    with pytest.raises(ValidationError, match="8.0 or newer"):
+        backend.target_manifest()
