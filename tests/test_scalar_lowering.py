@@ -33,3 +33,29 @@ def test_pure_scalar_ssa_is_hoisted_not_materialized():
     assert schedule_analysis(p, Schedule(fusion=False))["launch_count"] == 1
 
 
+def test_unfused_identity_is_one_copy_kernel():
+    p = Program("pointwise", (1031,), (Node("x", "input"),), "x")
+    assert "def kernel" in generate(p, Schedule(fusion=False))
+    assert schedule_analysis(p, Schedule(fusion=False))["launch_count"] == 1
+
+
+def test_gemm_model_accounts_for_unrolled_masked_iterations():
+    from asterion.ir import make_program
+
+    p = make_program("gemm", (17, 19, 33))
+    a = schedule_analysis(p, Schedule(unroll=1))
+    b = schedule_analysis(p, Schedule(unroll=4))
+    assert b["padded_work_units"] == a["padded_work_units"] * 2
+
+
+def test_gemm_output_must_be_the_verified_contraction():
+    from dataclasses import replace
+
+    import pytest
+    from asterion.io import ValidationError
+    from asterion.ir import make_program
+
+    p = make_program("gemm", (17, 19, 23))
+    for output in ("x", "y"):
+        with pytest.raises(ValidationError, match="pure contraction"):
+            verify(replace(p, output=output))
