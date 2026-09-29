@@ -44,3 +44,11 @@ def packet():
     return p, v, c
 
 
+def test_certificate_binds_exact_shape_code_and_numerical_suite():
+    p, v, c = packet()
+    assert validate_certificate(c, p, v) == tuple(c["shape"])
+    p["validation_certificates"] = [c]
+    p = seal(p, "integrity_hash")
+    assert validate_portfolio(p)["certificate_count"] == 1
+
+
