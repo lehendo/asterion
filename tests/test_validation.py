@@ -52,3 +52,31 @@ def test_certificate_binds_exact_shape_code_and_numerical_suite():
     assert validate_portfolio(p)["certificate_count"] == 1
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("status", "failed"),
+        ("measurement_kind", "simulated_fixture"),
+        ("shape", [19, 128]),
+        ("kernel_key", "stale"),
+        ("rtol", -1),
+        ("input_contract", "anything"),
+        ("compiled_binary_hashes", []),
+        ("checks", []),
+        ("seeds", [1729, 1729]),
+    ],
+)
+def test_invalid_certificate_rejected_even_after_checksum_recomputed(field, value):
+    p, v, c = packet()
+    c[field] = value
+    with pytest.raises(ValidationError):
+        validate_certificate(seal(c), p, v)
+
+
+def test_accidental_corruption_rejected():
+    p, v, c = packet()
+    c["atol"] = 1.0
+    with pytest.raises(ValidationError, match="integrity"):
+        validate_certificate(c, p, v)
+
+
