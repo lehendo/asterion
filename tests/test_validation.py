@@ -80,3 +80,30 @@ def test_accidental_corruption_rejected():
         validate_certificate(c, p, v)
 
 
+def test_duplicate_certificates_rejected():
+    p, _v, c = packet()
+    p["validation_certificates"] = [c, copy.deepcopy(c)]
+    with pytest.raises(ValidationError, match="duplicate"):
+        certificate_index(p)
+
+
+def test_legacy_portfolio_does_not_claim_validation_certificate():
+    p = fit_portfolio(matrix())
+    assert validate_portfolio(p)["certificate_count"] == 0
+
+
+def test_failed_recertification_revokes_previous_shape_authorization(monkeypatch):
+    from asterion.validation import certify_portfolio
+
+    p, _v, certificate = packet()
+    p["validation_certificates"] = [certificate]
+    p = seal(p, "integrity_hash")
+
+    def fail(*args, **kwargs):
+        raise ValidationError("differential recheck failed")
+
+    monkeypatch.setattr("asterion.validation.certify_variant", fail)
+    result = certify_portfolio(p, [certificate["shape"]])
+    assert result["validation_certificates"] == []
+    assert result["validation_attempts"][0]["status"] == "failed"
+    assert len(p["validation_certificates"]) == 1  # preserve caller-owned input
