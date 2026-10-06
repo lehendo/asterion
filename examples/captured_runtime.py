@@ -31,3 +31,35 @@ def capture_prepared(prepared):
     return graph, output
 
 
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("portfolio")
+    parser.add_argument("--backend", choices=["triton", "native"], default="triton")
+    args = parser.parse_args()
+    portfolio = read(args.portfolio)
+    if not portfolio.get("validation_certificates"):
+        parser.error("example requires at least one numerical certificate")
+    shape = portfolio["validation_certificates"][0]["shape"]
+    torch, _ = require_gpu()
+    inputs = make_inputs(make_program(portfolio["operation"], shape), 1729)
+    runtime = Runtime(portfolio, launch_backend=args.backend)
+    prepared = runtime.prepare(*inputs)
+    graph, output = capture_prepared(prepared)
+    graph.replay()
+    expected = operation_reference(portfolio["operation"])(*inputs)
+    torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-5)
+    print(
+        json.dumps(
+            {
+                "correctness": "passed",
+                "selection": prepared.selection,
+                "boundary": "standard PyTorch graph replay; static buffers, no per-replay metadata check",
+            }
+        )
+    )
+    del graph
+    runtime.close()
+
+
+if __name__ == "__main__":
+    main()
