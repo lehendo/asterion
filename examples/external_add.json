@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "artifact_type": "triton_case",
+  "case_id": "external_add_development",
+  "module": "external_add.py",
+  "source_sha256": "d339a460a766c6aa038fe6b991dfa2f4959c2f71bd230962e5668ca1c9ed7723",
+  "dimensions": {"N": 262149},
+  "tensors": {
+    "x": {"shape": [{"dim": "N"}], "dtype": "float32", "role": "input"},
+    "y": {"shape": [{"dim": "N"}], "dtype": "float32", "role": "input"},
+    "z": {"shape": [{"dim": "N"}], "dtype": "float32", "role": "output"}
+  },
+  "arguments": {"X": {"tensor": "x"}, "Y": {"tensor": "y"}, "Z": {"tensor": "z"}, "N": {"dim": "N"}},
+  "parameters": {
+    "BLOCK": {"kind": "constexpr", "values": [32, 1024]},
+    "num_warps": {"kind": "option", "values": [4]},
+    "enable_fp_fusion": {"kind": "option", "values": [false]}
+  },
+  "baseline": {"entrypoint": "add_kernel", "parameters": {"BLOCK": 1024, "num_warps": 4, "enable_fp_fusion": false}},
+  "candidate": {"entrypoint": "add_kernel", "parameters": {"BLOCK": 32, "num_warps": 4, "enable_fp_fusion": false}},
+  "grid": [{"ceildiv": [{"dim": "N"}, {"param": "BLOCK"}]}],
+  "reference": {"entrypoint": "reference", "description": "Independent torch FP32-rounded vector addition on exact input values"},
+  "numerical": {"kind": "exact", "justification": "One FP32 addition with no reassociation or multiply-add fusion, against a separately rounded torch reference"},
+  "measurement": {"rounds": 20, "launches": 100, "seed": 1847, "threshold": 0.1},
+  "origin": {"adaptations": "Independently written literal Triton; injected small-block launch change for development only", "license": "MIT"}
+}
