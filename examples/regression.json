@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "artifact_type": "regression_spec",
+  "program": {
+    "schema_version": 1,
+    "operation": "pointwise",
+    "shape": [1048583],
+    "dtype": "float32",
+    "layout": "contiguous",
+    "output": "out",
+    "nodes": [
+      {"name":"x","op":"input","args":[],"value":null},
+      {"name":"scale","op":"const","args":[],"value":1.25},
+      {"name":"bias","op":"const","args":[],"value":0.5},
+      {"name":"scaled","op":"mul","args":["x","scale"],"value":null},
+      {"name":"biased","op":"add","args":["scaled","bias"],"value":null},
+      {"name":"out","op":"relu","args":["biased"],"value":null}
+    ]
+  },
+  "baseline": {},
+  "candidate": {"fusion": false}
+}
