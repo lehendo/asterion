@@ -1,0 +1,14 @@
+# Supported scope and limitations
+
+- **Kernel contract:** reviewed self-contained plain Triton JIT source, explicit invocation/reference/configuration, contiguous nonaliasing inputs and one output. Arbitrary applications, hidden autotuners, arbitrary host wrappers, arbitrary source rewriting, multiple outputs and automatic capture import are unsupported.
+- **Numerical evidence:** finite declared domains only. Application tolerances and conditional forward models are not proofs; an admitted result may still fail another application's accuracy needs. Unsupported or numerically invalid cases must not become optimization recommendations.
+- **Measurements:** fixed-buffer graph device time and checked wrapper completion are separate. No locked-clock, exclusive-node, whole-application throughput or stationary-noise guarantee. Inconclusive does not mean equivalent.
+- **Explanations:** compiler provenance and controlled parameter effects are supported. A source-level factor can change multiple downstream behaviors. Physical hardware causes require additional evidence; no hardware counters are collected by the basic workflow.
+- **Reduction:** bounded dimension halving with constraints and fresh confirmation. It can fail or retain the original shape. No arbitrary graph/source minimization, global minimum or guaranteed mechanism preservation.
+- **Trust:** reviewed Python executes with caller authority. Worker environment filtering, process management and manifests are not a security sandbox or authenticity guarantee. Review standalone bundles before execution.
+- **Targets:** external execution requires NVIDIA SM80 or newer, with seven external tests and sanitizer validation on a full H100 using PyTorch 2.14.1+cu126/Triton 3.8.0. This is not full-suite H100 coverage or validation of every SM80+ device. Earlier IR/runtime validation used full RTX A6000 SM86. No A100/H200, MIG, multi-device or other-vendor validation is claimed.
+- **Retained native paths:** contiguous finite FP32 inference operations and empirical certificate-bound runtime; no autograd/universal layouts. Optional native Driver launch supports only its tested legacy Triton ABI. Triton remains responsible for GPU machine code generation.
+- **Evidence breadth:** a small, source-informed evaluation and injected examples do not establish broad diagnosis accuracy, novel search, general execution speedups, production maturity or human-time savings. Existing profilers/capture tools are often a better fit for wider applications.
+- **Dependencies:** the source install is CPU-only; GPU and development dependencies are optional. Historical compatibility configurations are not the recommended current installation. Review dependency advisories and upstream licenses for your deployment.
+
+Use the [integration guide](triton-kernels.md) to decide whether a kernel fits. For unsupported patterns or reproducibility failures, see [contributing](contributing.md).
