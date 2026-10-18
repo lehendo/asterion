@@ -1,0 +1,39 @@
+name: Installation, kernel or reproduction problem
+description: Report a supported workflow failure or describe a needed adapter.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share only material you have permission to disclose. Remove credentials,
+        private paths/accounts, device UUIDs, proprietary source and sensitive
+        inputs. Do not paste full environment dumps or raw artifact archives.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Area
+      options:
+        - Installation or packaging
+        - Unsupported kernel pattern
+        - Numerical discrepancy
+        - Performance measurement
+        - Reduction or standalone replay
+        - Adapter or workflow proposal
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Include the command and result status. Describe code privately if it cannot be shared.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Relevant environment
+      description: Python, package and OS versions; GPU model/CUDA/PyTorch/Triton if relevant. No unique device identifiers.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Sanitized reproducer or pattern
+      description: Use an independently owned example where possible. Include numerical policy and measurement boundary for relevant failures.
