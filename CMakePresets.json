@@ -1,0 +1,24 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "host",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/host",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ASTERION_BUILD_NATIVE": "ON",
+        "ASTERION_ENABLE_CUDA": "OFF"
+      }
+    },
+    {
+      "name": "host-sanitize",
+      "inherits": "host",
+      "binaryDir": "${sourceDir}/build/sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ASTERION_SANITIZE": "ON"
+      }
+    }
+  ]
+}
