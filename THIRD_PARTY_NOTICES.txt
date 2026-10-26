@@ -1,0 +1,18 @@
+Asterion source is licensed under the MIT License in LICENSE.
+
+Optional and build dependencies are obtained separately and retain their own
+licenses. No NVIDIA runtime/toolkit binaries, upstream issue snippets, captured
+third-party kernels, or fetched dependency source trees are included in the
+prospective source distribution.
+
+PyYAML, Triton, PyTorch, NumPy and Python build/development tools have separate
+upstream terms. Catch2 is fetched at the commit pinned in CMakeLists.txt and is
+licensed under the Boost Software License 1.0; preserve its license when
+redistributing fetched source or test artifacts. CUDA tooling is subject to
+NVIDIA's separate terms. This notice does not grant rights to those components.
+
+The included external addition example is independently written project code.
+User-imported source keeps its own license. Standalone export includes the full
+Asterion support license but does not relicense an imported kernel or establish
+permission to publish it. Review source provenance and dependency license files
+before redistributing binaries or adding third-party examples.
