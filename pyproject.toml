@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asterion-gpu"
+version = "0.3.0rc1"
+description = "GPU regression experiments, verified schedules and standalone reproducers"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0.2,<7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.2,<10", "hypothesis>=6,<7", "ruff>=0.9,<1", "build>=1,<2"]
+gpu = ["numpy>=1.26,<3", "torch==2.14.1", "triton==3.8.0; sys_platform == 'linux'"]
+legacy-gpu = ["numpy>=1.26,<3", "torch==2.7.1", "triton==3.3.1; sys_platform == 'linux'"]
+
+[project.scripts]
+asterion = "asterion.cli:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["asterion"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["gpu: requires allocated CUDA GPU"]
+
+[tool.ruff]
+line-length = 100
