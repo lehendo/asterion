@@ -1,0 +1,42 @@
+name: Public CPU package and native host checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ runner.temp }}/asterion-public
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Export only reviewed public files
+        working-directory: ${{ github.workspace }}
+        run: python tools/check_public_tree.py --export "$RUNNER_TEMP/asterion-public"
+      - run: python -m pip install '.[dev]'
+      - run: python -m ruff check python tests examples tools setup.py
+      - run: python -m ruff format --check python tests examples tools setup.py
+      - run: cmake --preset host
+      - run: cmake --build build/host -j2
+      - run: ctest --test-dir build/host --output-on-failure
+      - run: python -m pytest tests --ignore=tests/gpu -q
+        env:
+          ASTERION_NATIVE_LIBRARY: ${{ runner.temp }}/asterion-public/build/host/libasterion_native.so
+      - run: python -m build
+      - run: python tools/check_public_tree.py --archives dist
+      - name: Check installed CPU wheel and passive example
+        run: |
+          python -m venv "$RUNNER_TEMP/asterion-clean"
+          "$RUNNER_TEMP/asterion-clean/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/asterion-clean/bin/asterion" --help
+          "$RUNNER_TEMP/asterion-clean/bin/asterion" validate examples/external_add.json
+          "$RUNNER_TEMP/asterion-clean/bin/asterion" reproduce examples/external_add.json --export-only --output "$RUNNER_TEMP/asterion-standalone"
+# No GPU runner, artifact upload or release/publication action is configured.
