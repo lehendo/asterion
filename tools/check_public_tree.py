@@ -141,3 +141,30 @@ def archives(root, folder):
     return outcomes
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--export", type=Path, help="Create a new non-Git preview containing only allowed files"
+    )
+    parser.add_argument("--archives", type=Path)
+    args = parser.parse_args()
+    root = args.root.resolve()
+    names = check(root)
+    result = {"public_files": len(names), "documentation_links": "checked"}
+    if args.export:
+        destination = args.export.resolve()
+        destination.mkdir(parents=True, exist_ok=False)
+        for name in sorted(names):
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(root / name, target)
+        check(destination)
+        result["exported_non_git_preview"] = True
+    if args.archives:
+        result["archives"] = archives(root, args.archives)
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()
